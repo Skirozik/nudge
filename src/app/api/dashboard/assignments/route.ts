@@ -63,8 +63,9 @@ export async function POST(req: NextRequest) {
 
   const user = await prisma.user.findUnique({ where: { id: session.userId } })
   if (user) {
+    const safeTz = (() => { try { Intl.DateTimeFormat('en-US', { timeZone: user.timezone }); return user.timezone } catch { return 'America/New_York' } })()
     const due = assignment.dueAt.toLocaleDateString('en-US', {
-      timeZone: user.timezone,
+      timeZone: safeTz,
       month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
     })
     const modeLabel = (nudge_mode ?? 'basic') === 'persistent'

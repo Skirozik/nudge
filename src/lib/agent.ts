@@ -208,15 +208,28 @@ export async function runAgent(userId: string, userMessage: string): Promise<str
   const tz = user?.timezone ?? 'America/New_York'
 
   const nowUtc = new Date()
-  const nowLocal = nowUtc.toLocaleString('en-US', {
-    timeZone: tz,
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  })
+  let nowLocal: string
+  try {
+    nowLocal = nowUtc.toLocaleString('en-US', {
+      timeZone: tz,
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+  } catch {
+    nowLocal = nowUtc.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+  }
 
   const systemPrompt = `${PERSONAS[persona] ?? PERSONAS.coach}
 
