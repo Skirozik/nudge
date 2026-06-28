@@ -172,7 +172,7 @@ export async function POST(req: NextRequest) {
   // New users get a welcome sequence — skip the agent on their first message
   if (isNewUser) {
     try {
-      const welcome = "hey! I'm Nudge — I send you reminders for your assignments so nothing slips through. just tell me what's due and I'll handle the rest 📚"
+      const welcome = "HI! I'm Nudge! I send you reminders for your assignments and daily tasks so nothing slips through. just tell me what's due and I'll handle the rest 📚"
       await sendMessage(phone, welcome)
       await prisma.message.create({ data: { userId: user.id, direction: 'out', body: welcome } })
 
