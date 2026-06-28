@@ -16,12 +16,23 @@ export async function POST(req: NextRequest) {
 
   const normalized = phone.trim()
 
-  // Check user exists
   const user = await prisma.user.findUnique({ where: { phone: normalized } })
   if (!user) {
+    // Same response whether user exists or not — avoids phone enumeration
+    return NextResponse.json({ ok: true })
+  }
+
+  // Rate limit: max 3 OTP requests per phone per 10 minutes
+  const recentCount = await prisma.otpCode.count({
+    where: {
+      phone: normalized,
+      createdAt: { gte: new Date(Date.now() - 10 * 60 * 1000) },
+    },
+  })
+  if (recentCount >= 3) {
     return NextResponse.json(
-      { error: 'No account found for that number. Text hinudge@icloud.com first to get started.' },
-      { status: 404 }
+      { error: 'Too many requests. Wait a few minutes and try again.' },
+      { status: 429 }
     )
   }
 
@@ -32,7 +43,7 @@ export async function POST(req: NextRequest) {
   })
 
   const code = generateCode()
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000) // 10 min
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000)
 
   await prisma.otpCode.create({ data: { phone: normalized, code, expiresAt } })
 

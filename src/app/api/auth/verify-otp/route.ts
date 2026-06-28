@@ -13,13 +13,25 @@ export async function POST(req: NextRequest) {
   const otp = await prisma.otpCode.findFirst({
     where: {
       phone: phone.trim(),
-      code: code.trim(),
       used: false,
       expiresAt: { gte: new Date() },
     },
+    orderBy: { createdAt: 'desc' },
   })
 
   if (!otp) {
+    return NextResponse.json({ error: 'Invalid or expired code' }, { status: 401 })
+  }
+
+  if (otp.failedAttempts >= 5) {
+    return NextResponse.json({ error: 'Too many attempts. Request a new code.' }, { status: 429 })
+  }
+
+  if (otp.code !== code.trim()) {
+    await prisma.otpCode.update({
+      where: { id: otp.id },
+      data: { failedAttempts: { increment: 1 } },
+    })
     return NextResponse.json({ error: 'Invalid or expired code' }, { status: 401 })
   }
 
@@ -31,7 +43,6 @@ export async function POST(req: NextRequest) {
   }
 
   const token = await createSession(user.id)
-
   const res = NextResponse.json({ ok: true })
   res.cookies.set(sessionCookieOptions(token))
   return res
