@@ -28,6 +28,16 @@ const NAG_ESCALATION = [
   "Final text. Make it count. Full drama queen. This is your last one and you want them to FEEL that.",
 ]
 
+async function appendToConversation(userId: string, message: string): Promise<void> {
+  const existing = await prisma.conversation.findUnique({ where: { userId } })
+  const messages = [...((existing?.messages ?? []) as object[]), { role: 'assistant', content: message }]
+  await prisma.conversation.upsert({
+    where: { userId },
+    update: { messages },
+    create: { userId, messages },
+  })
+}
+
 async function generateReminderMessage(
   title: string,
   course: string | null,
@@ -118,6 +128,8 @@ async function processReminder(assignmentId: string | undefined): Promise<void> 
     data: { userId: user.id, direction: 'out', body: message },
   })
 
+  await appendToConversation(user.id, message)
+
   if (assignment.nudgeMode === 'persistent') {
     await scheduleFollowUp({
       assignmentId,
@@ -178,6 +190,7 @@ const worker = new Worker(
       if (user && !user.optedOut) {
         await sendMessage(user.phone, message)
         await prisma.message.create({ data: { userId, direction: 'out', body: message } })
+        await appendToConversation(userId, message)
         if (persistent) {
           const sentAfter = new Date().toISOString()
           await scheduleFollowUp({ userId, oneOffMessage: message, followUpNumber: 0, sentAfter })
@@ -227,6 +240,7 @@ const worker = new Worker(
       const message = await generateNagMessage(nagTitle, nagCourse, followUpNumber)
       await sendMessage(phone, message)
       await prisma.message.create({ data: { userId, direction: 'out', body: message } })
+      await appendToConversation(userId, message)
 
       console.log(`[worker] Sent follow-up #${followUpNumber + 1} for user ${userId}`)
 
