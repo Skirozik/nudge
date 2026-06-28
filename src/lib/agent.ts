@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from './prisma'
-import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleFollowUp } from './queue'
+import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder } from './queue'
 import { resolveTimezone } from './timezone'
 
 const client = new Anthropic()

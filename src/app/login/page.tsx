@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 type Step = 'phone' | 'code'
 
@@ -55,7 +56,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center px-6">
-      <a href="/" className="text-2xl font-bold tracking-tight mb-12">nudge</a>
+      <Link href="/" className="text-2xl font-bold tracking-tight mb-12">nudge</Link>
 
       <div className="w-full max-w-sm">
         {step === 'phone' ? (
