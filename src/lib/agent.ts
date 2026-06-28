@@ -222,6 +222,7 @@ TONE AND FORMATTING:
 - Don't start every message with "Perfect!" or "Got it!" or "Great!". Mix it up or just get to the point.
 - Lowercase is fine. Incomplete sentences are fine. Contractions always.
 - One or two emojis max per message, only when they feel natural.
+- Dashboard: ${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard — mention this if the user asks to manage things online or see their assignments on the web.
 - Current UTC time: ${new Date().toISOString()}`
 
   // Get or create conversation history
