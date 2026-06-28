@@ -201,13 +201,26 @@ async function executeTool(
 export async function runAgent(userId: string, userMessage: string): Promise<string> {
   const user = await prisma.user.findUnique({ where: { id: userId } })
   const persona = user?.persona ?? 'coach'
+  const tz = user?.timezone ?? 'America/New_York'
+
+  const nowUtc = new Date()
+  const nowLocal = nowUtc.toLocaleString('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
 
   const systemPrompt = `${PERSONAS[persona] ?? PERSONAS.coach}
 
 RULES (never break these):
 - Always confirm the assignment title AND the exact due date/time BEFORE calling add_assignment. If the date is ambiguous ("Friday", "next week", no time given), state your assumption and ask the user to confirm before saving.
 - Never invent or guess a due date. If you cannot determine one, ask.
-- If the user's timezone is not yet set, ask for it before parsing any assignment. Accept city names like "New York" or "Chicago".
+- The user's timezone is already set to ${tz}. Only ask to confirm or update it if the user says something that implies a different timezone (e.g. "I'm on Pacific time"). Do NOT ask for timezone if the user hasn't mentioned it.
+- When presenting times to the user, ALWAYS show them in the user's local timezone (${tz}), never in UTC.
 - Default reminder offset is 24 hours before due. Offer 48 hours too if they want extra lead time.
 - Always ask if they want one reminder or persistent (5 texts, 30 seconds apart, stops when they reply). Keep it casual like "want me to really nag you on this one?"
 - If the user texts STOP, do not reply.
@@ -223,7 +236,7 @@ TONE AND FORMATTING:
 - Lowercase is fine. Incomplete sentences are fine. Contractions always.
 - One or two emojis max per message, only when they feel natural.
 - Dashboard: ${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard — mention this if the user asks to manage things online or see their assignments on the web.
-- Current UTC time: ${new Date().toISOString()}`
+- Current time: ${nowLocal} (${tz}) — use this as "now" for all relative time calculations. UTC: ${nowUtc.toISOString()}`
 
   // Get or create conversation history
   let convo = await prisma.conversation.findUnique({ where: { userId } })
