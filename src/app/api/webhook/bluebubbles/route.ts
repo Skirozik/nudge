@@ -76,9 +76,8 @@ export async function POST(req: NextRequest) {
   }
 
   // Handle image attachments (syllabus photos)
-  const imageAttachment = data.hasAttachments
-    ? data.attachments?.find((a) => a.mimeType?.startsWith('image/'))
-    : undefined
+  console.log('[webhook] payload data keys:', JSON.stringify({ hasAttachments: data.hasAttachments, attachmentCount: data.attachments?.length, mimeTypes: data.attachments?.map(a => a.mimeType), textLength: data.text?.length }))
+  const imageAttachment = data.attachments?.find((a) => a.mimeType?.startsWith('image/'))
 
   if (imageAttachment) {
     let user = await prisma.user.findUnique({ where: { phone } })
