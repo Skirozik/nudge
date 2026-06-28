@@ -86,10 +86,26 @@ export default function DashboardClient({ user, initialAssignments, messages, up
   const [addTitle, setAddTitle] = useState('')
   const [addCourse, setAddCourse] = useState('')
   const [addDueAt, setAddDueAt] = useState('')
-  const [addRemind, setAddRemind] = useState('24')
+  const [addReminderOffsets, setAddReminderOffsets] = useState<number[]>([24])
+  const [showCustomReminder, setShowCustomReminder] = useState(false)
+  const [customReminderAt, setCustomReminderAt] = useState('')
   const [addMode, setAddMode] = useState('basic')
   const [addSaving, setAddSaving] = useState(false)
   const [addError, setAddError] = useState('')
+
+  const REMINDER_PRESETS = [
+    { label: '1h before', hours: 1 },
+    { label: '3h before', hours: 3 },
+    { label: '1 day before', hours: 24 },
+    { label: '2 days before', hours: 48 },
+    { label: '1 week before', hours: 168 },
+  ]
+
+  function togglePreset(hours: number) {
+    setAddReminderOffsets((prev) =>
+      prev.includes(hours) ? prev.filter((h) => h !== hours) : [...prev, hours]
+    )
+  }
 
   async function markDone(id: string) {
     setCompleting(id)
@@ -116,10 +132,20 @@ export default function DashboardClient({ user, initialAssignments, messages, up
   async function addAssignment(e: React.FormEvent) {
     e.preventDefault()
     if (!addTitle || !addDueAt) { setAddError('Title and due date are required'); return }
+
+    const offsets = [...addReminderOffsets]
+    if (showCustomReminder && customReminderAt) {
+      const offset = Math.round(
+        (new Date(addDueAt).getTime() - new Date(customReminderAt).getTime()) / (1000 * 60 * 60)
+      )
+      if (offset <= 0) { setAddError('Custom reminder must be before the due date'); return }
+      if (offset > 720) { setAddError('Custom reminder can\'t be more than 30 days before'); return }
+      if (!offsets.includes(offset)) offsets.push(offset)
+    }
+    if (offsets.length === 0) offsets.push(24)
+
     setAddError('')
     setAddSaving(true)
-
-    const offsets = addRemind === '24+48' ? [24, 48] : [parseInt(addRemind)]
 
     const res = await fetch('/api/dashboard/assignments', {
       method: 'POST',
@@ -146,7 +172,9 @@ export default function DashboardClient({ user, initialAssignments, messages, up
     setAddTitle('')
     setAddCourse('')
     setAddDueAt('')
-    setAddRemind('24')
+    setAddReminderOffsets([24])
+    setShowCustomReminder(false)
+    setCustomReminderAt('')
     setAddMode('basic')
     setShowAddForm(false)
     setAddSaving(false)
@@ -240,35 +268,59 @@ export default function DashboardClient({ user, initialAssignments, messages, up
                   required
                   className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-[#007AFF] transition-colors [color-scheme:dark]"
                 />
-                <div className="flex gap-3">
-                  <div className="flex-1">
-                    <label className="text-white/40 text-xs mb-1.5 block">Remind me</label>
-                    <select
-                      value={addRemind}
-                      onChange={(e) => setAddRemind(e.target.value)}
-                      className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#007AFF] transition-colors [color-scheme:dark]"
+                <div>
+                  <label className="text-white/40 text-xs mb-2 block">Remind me</label>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {REMINDER_PRESETS.map((p) => (
+                      <button
+                        key={p.hours}
+                        type="button"
+                        onClick={() => togglePreset(p.hours)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                          addReminderOffsets.includes(p.hours)
+                            ? 'bg-[#007AFF] border-[#007AFF] text-white'
+                            : 'bg-white/5 border-white/10 text-white/50 hover:text-white/80'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setShowCustomReminder((v) => !v)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                        showCustomReminder
+                          ? 'bg-[#007AFF] border-[#007AFF] text-white'
+                          : 'bg-white/5 border-white/10 text-white/50 hover:text-white/80'
+                      }`}
                     >
-                      <option value="24">24h before</option>
-                      <option value="48">48h before</option>
-                      <option value="24+48">24h + 48h before</option>
-                    </select>
+                      + custom time
+                    </button>
                   </div>
-                  <div className="flex-1">
-                    <label className="text-white/40 text-xs mb-1.5 block">Mode</label>
-                    <div className="flex rounded-xl border border-white/10 overflow-hidden">
-                      {['basic', 'persistent'].map((m) => (
-                        <button
-                          key={m}
-                          type="button"
-                          onClick={() => setAddMode(m)}
-                          className={`flex-1 py-2.5 text-sm font-medium transition-colors capitalize ${
-                            addMode === m ? 'bg-[#007AFF] text-white' : 'bg-white/10 text-white/50 hover:text-white/80'
-                          }`}
-                        >
-                          {m}
-                        </button>
-                      ))}
-                    </div>
+                  {showCustomReminder && (
+                    <input
+                      type="datetime-local"
+                      value={customReminderAt}
+                      onChange={(e) => setCustomReminderAt(e.target.value)}
+                      className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#007AFF] transition-colors [color-scheme:dark]"
+                    />
+                  )}
+                </div>
+                <div>
+                  <label className="text-white/40 text-xs mb-1.5 block">Mode</label>
+                  <div className="flex rounded-xl border border-white/10 overflow-hidden">
+                    {['basic', 'persistent'].map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setAddMode(m)}
+                        className={`flex-1 py-2.5 text-sm font-medium transition-colors capitalize ${
+                          addMode === m ? 'bg-[#007AFF] text-white' : 'bg-white/10 text-white/50 hover:text-white/80'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
