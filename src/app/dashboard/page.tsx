@@ -26,10 +26,34 @@ export default async function DashboardPage() {
     nextReminder: a.reminders[0]?.sendAt?.toISOString() ?? null,
   }))
 
+  const messages = await prisma.message.findMany({
+    where: { userId: user.id },
+    orderBy: { createdAt: 'desc' },
+    take: 30,
+  })
+
+  const upcomingReminders = await prisma.reminder.findMany({
+    where: { assignment: { userId: user.id, status: 'open' }, sent: false },
+    orderBy: { sendAt: 'asc' },
+    include: { assignment: { select: { title: true, course: true } } },
+  })
+
   return (
     <DashboardClient
       user={{ phone: user.phone, persona: user.persona, timezone: user.timezone }}
       initialAssignments={initialData}
+      messages={messages.map((m) => ({
+        id: m.id,
+        direction: m.direction,
+        body: m.body,
+        createdAt: m.createdAt.toISOString(),
+      }))}
+      upcomingReminders={upcomingReminders.map((r) => ({
+        id: r.id,
+        sendAt: r.sendAt.toISOString(),
+        assignmentTitle: r.assignment.title,
+        assignmentCourse: r.assignment.course,
+      }))}
     />
   )
 }
