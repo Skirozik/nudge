@@ -169,6 +169,13 @@ export async function POST(req: NextRequest) {
     data: { userId: user.id, direction: 'in', body: text },
   })
 
+  // Send welcome message before agent responds for new users
+  if (isNewUser) {
+    const welcome = "hey! I'm Nudge — I send you reminders for your assignments so nothing slips through. just tell me what's due and I'll handle the rest 📚"
+    await sendMessage(phone, welcome)
+    await prisma.message.create({ data: { userId: user.id, direction: 'out', body: welcome } })
+  }
+
   // Run agent and reply
   void sendTypingIndicator(phone)
   try {
