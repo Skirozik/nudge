@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "src/app/api/webhook/bluebubbles/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/auth/send-otp/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/dashboard/page.tsx": {
+      "maxDuration": 30
+    }
+  }
+}
