@@ -75,10 +75,21 @@ export default function DashboardClient({ user, initialAssignments, messages, up
   const [persona, setPersona] = useState(user.persona)
   const [personaSaving, setPersonaSaving] = useState(false)
   const [completing, setCompleting] = useState<string | null>(null)
+  const [canceling, setCanceling] = useState<string | null>(null)
   const [timezone, setTimezone] = useState(user.timezone)
   const [timezoneInput, setTimezoneInput] = useState(user.timezone)
   const [timezoneSaving, setTimezoneSaving] = useState(false)
   const [timezoneSaved, setTimezoneSaved] = useState(false)
+
+  // Add form state
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [addTitle, setAddTitle] = useState('')
+  const [addCourse, setAddCourse] = useState('')
+  const [addDueAt, setAddDueAt] = useState('')
+  const [addRemind, setAddRemind] = useState('24')
+  const [addMode, setAddMode] = useState('basic')
+  const [addSaving, setAddSaving] = useState(false)
+  const [addError, setAddError] = useState('')
 
   async function markDone(id: string) {
     setCompleting(id)
@@ -89,6 +100,56 @@ export default function DashboardClient({ user, initialAssignments, messages, up
     })
     setAssignments((prev) => prev.filter((a) => a.id !== id))
     setCompleting(null)
+  }
+
+  async function cancelAssignment(id: string) {
+    setCanceling(id)
+    await fetch('/api/dashboard/assignments', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, status: 'canceled' }),
+    })
+    setAssignments((prev) => prev.filter((a) => a.id !== id))
+    setCanceling(null)
+  }
+
+  async function addAssignment(e: React.FormEvent) {
+    e.preventDefault()
+    if (!addTitle || !addDueAt) { setAddError('Title and due date are required'); return }
+    setAddError('')
+    setAddSaving(true)
+
+    const offsets = addRemind === '24+48' ? [24, 48] : [parseInt(addRemind)]
+
+    const res = await fetch('/api/dashboard/assignments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: addTitle,
+        course: addCourse || null,
+        due_at: new Date(addDueAt).toISOString(),
+        reminder_offsets: offsets,
+        nudge_mode: addMode,
+      }),
+    })
+
+    if (!res.ok) {
+      setAddError('Something went wrong — try again')
+      setAddSaving(false)
+      return
+    }
+
+    const created: Assignment = await res.json()
+    setAssignments((prev) => [created, ...prev].sort(
+      (a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()
+    ))
+    setAddTitle('')
+    setAddCourse('')
+    setAddDueAt('')
+    setAddRemind('24')
+    setAddMode('basic')
+    setShowAddForm(false)
+    setAddSaving(false)
   }
 
   async function savePersona(newPersona: string) {
@@ -142,11 +203,98 @@ export default function DashboardClient({ user, initialAssignments, messages, up
         <section>
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-lg">Upcoming assignments</h2>
-            <span className="text-white/30 text-sm">{assignments.length} open</span>
+            <div className="flex items-center gap-3">
+              <span className="text-white/30 text-sm">{assignments.length} open</span>
+              <button
+                onClick={() => { setShowAddForm((v) => !v); setAddError('') }}
+                className="text-sm font-medium text-[#007AFF] hover:text-[#0066DD] transition-colors"
+              >
+                {showAddForm ? 'Cancel' : '+ Add'}
+              </button>
+            </div>
           </div>
+
+          {/* Add form */}
+          {showAddForm && (
+            <form onSubmit={addAssignment} className="bg-white/5 rounded-2xl p-5 mb-4 space-y-4">
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  value={addTitle}
+                  onChange={(e) => setAddTitle(e.target.value)}
+                  placeholder="Assignment title"
+                  required
+                  className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-[#007AFF] transition-colors"
+                />
+                <input
+                  type="text"
+                  value={addCourse}
+                  onChange={(e) => setAddCourse(e.target.value)}
+                  placeholder="Course name (optional)"
+                  className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-[#007AFF] transition-colors"
+                />
+                <input
+                  type="datetime-local"
+                  value={addDueAt}
+                  onChange={(e) => setAddDueAt(e.target.value)}
+                  required
+                  className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-[#007AFF] transition-colors [color-scheme:dark]"
+                />
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className="text-white/40 text-xs mb-1.5 block">Remind me</label>
+                    <select
+                      value={addRemind}
+                      onChange={(e) => setAddRemind(e.target.value)}
+                      className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#007AFF] transition-colors [color-scheme:dark]"
+                    >
+                      <option value="24">24h before</option>
+                      <option value="48">48h before</option>
+                      <option value="24+48">24h + 48h before</option>
+                    </select>
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-white/40 text-xs mb-1.5 block">Mode</label>
+                    <div className="flex rounded-xl border border-white/10 overflow-hidden">
+                      {['basic', 'persistent'].map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setAddMode(m)}
+                          className={`flex-1 py-2.5 text-sm font-medium transition-colors capitalize ${
+                            addMode === m ? 'bg-[#007AFF] text-white' : 'bg-white/10 text-white/50 hover:text-white/80'
+                          }`}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {addError && <p className="text-red-400 text-xs">{addError}</p>}
+              <div className="flex gap-3">
+                <button
+                  type="submit"
+                  disabled={addSaving}
+                  className="bg-[#007AFF] hover:bg-[#0066DD] disabled:opacity-40 transition-colors text-white text-sm font-medium px-5 py-2.5 rounded-xl"
+                >
+                  {addSaving ? 'Saving...' : 'Save assignment'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowAddForm(false); setAddError('') }}
+                  className="text-white/40 hover:text-white/70 text-sm transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
           {assignments.length === 0 ? (
             <div className="bg-white/5 rounded-2xl p-8 text-center text-white/40 text-sm">
-              No open assignments. Text Nudge to add one.
+              No open assignments. Add one above or text Nudge.
             </div>
           ) : (
             <ul className="space-y-3">
@@ -157,7 +305,7 @@ export default function DashboardClient({ user, initialAssignments, messages, up
                 >
                   <button
                     onClick={() => markDone(a.id)}
-                    disabled={completing === a.id}
+                    disabled={completing === a.id || canceling === a.id}
                     className="w-5 h-5 rounded-full border-2 border-white/20 hover:border-[#007AFF] flex-shrink-0 transition-colors disabled:opacity-40"
                     title="Mark done"
                   />
@@ -171,6 +319,14 @@ export default function DashboardClient({ user, initialAssignments, messages, up
                       {a.nudgeMode === 'persistent' ? '🔁 persistent' : '📌 basic'}
                     </p>
                   </div>
+                  <button
+                    onClick={() => cancelAssignment(a.id)}
+                    disabled={completing === a.id || canceling === a.id}
+                    className="text-white/20 hover:text-red-400 transition-colors disabled:opacity-40 flex-shrink-0 text-lg leading-none"
+                    title="Cancel assignment"
+                  >
+                    ×
+                  </button>
                 </li>
               ))}
             </ul>
