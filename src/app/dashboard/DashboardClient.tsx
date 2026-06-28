@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 interface Assignment {
   id: string
@@ -75,7 +76,7 @@ export default function DashboardClient({ user, initialAssignments }: Props) {
     <div className="min-h-screen bg-black text-white">
       {/* Header */}
       <header className="border-b border-white/10 px-6 py-4 flex items-center justify-between max-w-3xl mx-auto">
-        <a href="/" className="text-lg font-bold tracking-tight">nudge</a>
+        <Link href="/" className="text-lg font-bold tracking-tight">nudge</Link>
         <div className="flex items-center gap-4">
           <span className="text-white/40 text-sm font-mono">{user.phone}</span>
           <button onClick={logout} className="text-white/40 hover:text-white/70 text-sm transition-colors">
