@@ -169,11 +169,25 @@ export async function POST(req: NextRequest) {
     data: { userId: user.id, direction: 'in', body: text },
   })
 
-  // Send welcome message before agent responds for new users
+  // New users get a welcome sequence — skip the agent on their first message
   if (isNewUser) {
-    const welcome = "hey! I'm Nudge — I send you reminders for your assignments so nothing slips through. just tell me what's due and I'll handle the rest 📚"
-    await sendMessage(phone, welcome)
-    await prisma.message.create({ data: { userId: user.id, direction: 'out', body: welcome } })
+    try {
+      const welcome = "hey! I'm Nudge — I send you reminders for your assignments so nothing slips through. just tell me what's due and I'll handle the rest 📚"
+      await sendMessage(phone, welcome)
+      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: welcome } })
+
+      const tip = "💡 Quick tip: add me to your allowed contacts so reminders get through even on Do Not Disturb → Settings › Focus › Do Not Disturb › People › Add."
+      await sendMessage(phone, tip)
+      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: tip } })
+
+      const dashUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard`
+      const dashMsg = `You can also manage your assignments and settings at ${dashUrl}`
+      await sendMessage(phone, dashMsg)
+      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: dashMsg } })
+    } catch (err) {
+      console.error('[webhook] new user welcome error:', err)
+    }
+    return NextResponse.json({ ok: true })
   }
 
   // Run agent and reply
@@ -185,17 +199,6 @@ export async function POST(req: NextRequest) {
       await prisma.message.create({
         data: { userId: user.id, direction: 'out', body: reply },
       })
-    }
-
-    if (isNewUser) {
-      const tip = "💡 Quick tip: add me to your allowed contacts so reminders get through even on Do Not Disturb → Settings › Focus › Do Not Disturb › People › Add."
-      await sendMessage(phone, tip)
-      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: tip } })
-
-      const dashUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard`
-      const dashMsg = `You can also manage your assignments and settings at ${dashUrl}`
-      await sendMessage(phone, dashMsg)
-      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: dashMsg } })
     }
   } catch (err) {
     console.error('[webhook] agent error:', err)
