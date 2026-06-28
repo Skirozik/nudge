@@ -1,0 +1,97 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String        @id @default(uuid())
+  phone        String        @unique
+  timezone     String        @default("America/New_York")
+  persona      String        @default("coach")
+  createdAt    DateTime      @default(now())
+  optedOut     Boolean       @default(false)
+  assignments  Assignment[]
+  conversation Conversation?
+  messages     Message[]
+  sessions     Session[]
+}
+
+model Assignment {
+  id              String     @id @default(uuid())
+  userId          String
+  user            User       @relation(fields: [userId], references: [id])
+  title           String
+  course          String?
+  dueAt           DateTime
+  reminderOffsets Int[]      @default([24])
+  nudgeMode       String     @default("basic")
+  status          Status     @default(open)
+  source          Source     @default(text)
+  createdAt       DateTime   @default(now())
+  reminders       Reminder[]
+}
+
+enum Status {
+  open
+  done
+  canceled
+}
+
+enum Source {
+  text
+  screenshot
+}
+
+model Reminder {
+  id           String     @id @default(uuid())
+  assignmentId String
+  assignment   Assignment @relation(fields: [assignmentId], references: [id])
+  sendAt       DateTime
+  sent         Boolean    @default(false)
+  sentAt       DateTime?
+  bullmqJobId  String?
+}
+
+model Conversation {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id])
+  messages  Json     @default("[]")
+  updatedAt DateTime @updatedAt
+}
+
+model Message {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  direction Direction
+  body      String
+  createdAt DateTime  @default(now())
+}
+
+enum Direction {
+  in
+  out
+}
+
+model OtpCode {
+  id        String   @id @default(uuid())
+  phone     String
+  code      String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  token     String   @unique @default(uuid())
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
