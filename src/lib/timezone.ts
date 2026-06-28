@@ -34,7 +34,14 @@ const CITY_MAP: Record<string, string> = {
 
 export function resolveTimezone(input: string): string {
   const lower = input.toLowerCase().trim()
-  return CITY_MAP[lower] ?? input
+  const resolved = CITY_MAP[lower] ?? input
+  // Validate it's a real IANA timezone; fall back to New York if not
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: resolved })
+    return resolved
+  } catch {
+    return 'America/New_York'
+  }
 }
 
 export function shiftToSocialHour(utcDate: Date, tz: string): Date {

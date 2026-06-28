@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
+import { resolveTimezone } from '@/lib/timezone'
 
 export const runtime = 'nodejs'
 
@@ -34,7 +35,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (body.timezone !== undefined) {
-    data.timezone = body.timezone
+    data.timezone = resolveTimezone(body.timezone)
   }
 
   const user = await prisma.user.update({ where: { id: session.userId }, data })
