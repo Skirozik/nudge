@@ -35,6 +35,11 @@ const TOOLS: Anthropic.Tool[] = [
           enum: ['basic', 'persistent'],
           description: 'basic = one reminder text; persistent = 5 texts 30 seconds apart, stops when they reply. Use persistent for high-stakes assignments or when the user asks to be nagged.',
         },
+        source: {
+          type: 'string',
+          enum: ['text', 'screenshot'],
+          description: 'Source of the assignment. Use "screenshot" when saving from a parsed syllabus photo.',
+        },
       },
       required: ['title', 'due_at'],
     },
@@ -114,12 +119,13 @@ async function executeTool(
 ): Promise<unknown> {
   switch (name) {
     case 'add_assignment': {
-      const { title, course, due_at, reminder_offsets, nudge_mode } = input as {
+      const { title, course, due_at, reminder_offsets, nudge_mode, source } = input as {
         title: string
         course?: string
         due_at: string
         reminder_offsets?: number[]
         nudge_mode?: string
+        source?: string
       }
       const offsets = reminder_offsets && reminder_offsets.length > 0 ? reminder_offsets : [24]
 
@@ -132,7 +138,7 @@ async function executeTool(
           reminderOffsets: offsets,
           nudgeMode: nudge_mode ?? 'basic',
           status: 'open',
-          source: 'text',
+          source: (source === 'screenshot' ? 'screenshot' : 'text') as 'text' | 'screenshot',
         },
       })
 

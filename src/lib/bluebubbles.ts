@@ -10,6 +10,23 @@ export async function sendTypingIndicator(phone: string): Promise<void> {
   ).catch(() => {})
 }
 
+export async function downloadAttachment(
+  guid: string
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const url = process.env.BLUEBUBBLES_URL
+  const password = process.env.BLUEBUBBLES_PASSWORD
+  if (!url || !password) return null
+
+  const res = await fetch(
+    `${url}/api/v1/attachment/${encodeURIComponent(guid)}/download?password=${encodeURIComponent(password)}`
+  ).catch(() => null)
+  if (!res || !res.ok) return null
+
+  const buffer = Buffer.from(await res.arrayBuffer())
+  const mimeType = res.headers.get('content-type') ?? 'image/jpeg'
+  return { buffer, mimeType }
+}
+
 export async function sendMessage(phone: string, text: string): Promise<void> {
   const url = process.env.BLUEBUBBLES_URL
   const password = process.env.BLUEBUBBLES_PASSWORD

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { sendMessage, sendTypingIndicator } from '@/lib/bluebubbles'
+import { sendMessage, sendTypingIndicator, downloadAttachment } from '@/lib/bluebubbles'
 import { runAgent } from '@/lib/agent'
+import { parseSyllabusImage } from '@/lib/visionParser'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -12,6 +13,12 @@ interface BBPayload {
     guid?: string
     text?: string
     isFromMe?: boolean
+    hasAttachments?: boolean
+    attachments?: Array<{
+      guid: string
+      mimeType: string
+      transferName?: string
+    }>
     handle?: { address: string }
     chats?: Array<{ guid: string }>
   }
@@ -66,6 +73,57 @@ export async function POST(req: NextRequest) {
   const phone = data.handle?.address
   if (!phone) {
     return NextResponse.json({ error: 'No phone address in payload' }, { status: 400 })
+  }
+
+  // Handle image attachments (syllabus photos)
+  const imageAttachment = data.hasAttachments
+    ? data.attachments?.find((a) => a.mimeType?.startsWith('image/'))
+    : undefined
+
+  if (imageAttachment) {
+    let user = await prisma.user.findUnique({ where: { phone } })
+    if (user?.optedOut) return NextResponse.json({ ok: true })
+    if (!user) user = await prisma.user.create({ data: { phone } })
+
+    await prisma.message.create({ data: { userId: user.id, direction: 'in', body: '[photo]' } })
+    void sendTypingIndicator(phone)
+
+    try {
+      const attachment = await downloadAttachment(imageAttachment.guid)
+      if (!attachment) {
+        await sendMessage(phone, "couldn't download that photo — try sending it again?")
+        return NextResponse.json({ ok: true })
+      }
+
+      const extracted = await parseSyllabusImage(attachment.buffer, attachment.mimeType, user.timezone)
+
+      if (extracted.length === 0) {
+        const reply = "couldn't make out any assignments in that one — try a clearer photo?"
+        await sendMessage(phone, reply)
+        await prisma.message.create({ data: { userId: user.id, direction: 'out', body: reply } })
+        return NextResponse.json({ ok: true })
+      }
+
+      const lines = extracted.map((a, i) => {
+        const due = a.dueAt ? new Date(a.dueAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'no date'
+        return `${i + 1}. ${a.title}${a.course ? ` (${a.course})` : ''} — due ${due}`
+      })
+      const preview = `found ${extracted.length} assignment${extracted.length === 1 ? '' : 's'} in your syllabus:\n${lines.join('\n')}`
+      await sendMessage(phone, preview)
+      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: preview } })
+
+      const syntheticMsg = `[The user sent a syllabus photo. I extracted these assignments: ${JSON.stringify(extracted)}. Ask the user which ones to save, then call add_assignment for each confirmed one with source set to "screenshot". If they say "save all" or "all of them", save every one without asking about each individually — but still confirm reminder preferences in bulk.]`
+      const agentReply = await runAgent(user.id, syntheticMsg)
+      if (agentReply) {
+        await sendMessage(phone, agentReply)
+        await prisma.message.create({ data: { userId: user.id, direction: 'out', body: agentReply } })
+      }
+    } catch (err) {
+      console.error('[webhook] image handling error:', err)
+      await sendMessage(phone, "something went wrong reading that photo — try again?")
+    }
+
+    return NextResponse.json({ ok: true })
   }
 
   const text = data.text?.trim() ?? ''
