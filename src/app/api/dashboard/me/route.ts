@@ -24,10 +24,17 @@ export async function PATCH(req: NextRequest) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json()
-  const allowed = ['persona', 'timezone']
   const data: Record<string, string> = {}
-  for (const key of allowed) {
-    if (body[key] !== undefined) data[key] = body[key]
+
+  if (body.persona !== undefined) {
+    if (!['coach', 'snarky', 'anxious'].includes(body.persona)) {
+      return NextResponse.json({ error: 'Invalid persona' }, { status: 400 })
+    }
+    data.persona = body.persona
+  }
+
+  if (body.timezone !== undefined) {
+    data.timezone = body.timezone
   }
 
   const user = await prisma.user.update({ where: { id: session.userId }, data })
