@@ -168,20 +168,18 @@ async function executeTool(
 
     case 'complete_assignment': {
       const { assignment_id } = input as { assignment_id: string }
-      await prisma.assignment.update({
-        where: { id: assignment_id },
-        data: { status: 'done' },
-      })
+      const assignment = await prisma.assignment.findUnique({ where: { id: assignment_id } })
+      if (!assignment || assignment.userId !== userId) return { error: 'Assignment not found' }
+      await prisma.assignment.update({ where: { id: assignment_id }, data: { status: 'done' } })
       await cancelPendingReminders(assignment_id)
       return { success: true }
     }
 
     case 'cancel_assignment': {
       const { assignment_id } = input as { assignment_id: string }
-      await prisma.assignment.update({
-        where: { id: assignment_id },
-        data: { status: 'canceled' },
-      })
+      const assignment = await prisma.assignment.findUnique({ where: { id: assignment_id } })
+      if (!assignment || assignment.userId !== userId) return { error: 'Assignment not found' }
+      await prisma.assignment.update({ where: { id: assignment_id }, data: { status: 'canceled' } })
       await cancelPendingReminders(assignment_id)
       return { success: true }
     }

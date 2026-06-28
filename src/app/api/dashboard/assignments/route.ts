@@ -33,14 +33,20 @@ export async function POST(req: NextRequest) {
   const { title, course, due_at, reminder_offsets, nudge_mode } = await req.json()
   if (!title || !due_at) return NextResponse.json({ error: 'title and due_at required' }, { status: 400 })
 
-  const offsets = Array.isArray(reminder_offsets) && reminder_offsets.length > 0 ? reminder_offsets : [24]
+  const dueDate = new Date(due_at)
+  if (isNaN(dueDate.getTime())) return NextResponse.json({ error: 'Invalid due_at date' }, { status: 400 })
+
+  const rawOffsets = Array.isArray(reminder_offsets) && reminder_offsets.length > 0 ? reminder_offsets : [24]
+  const offsets = rawOffsets
+    .map((n: unknown) => Number(n))
+    .filter((n: number) => Number.isFinite(n) && n > 0 && n <= 720)
 
   const assignment = await prisma.assignment.create({
     data: {
       userId: session.userId,
       title,
       course: course ?? null,
-      dueAt: new Date(due_at),
+      dueAt: dueDate,
       reminderOffsets: offsets,
       nudgeMode: nudge_mode ?? 'basic',
       status: 'open',
