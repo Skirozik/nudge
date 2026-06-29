@@ -201,8 +201,13 @@ export async function POST(req: NextRequest) {
       })
     }
   } catch (err) {
-    console.error('[webhook] agent error:', err)
-    await sendMessage(phone, "Something glitched on my end — try again?")
+    const errMsg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err)
+    console.error('[webhook] agent error:', errMsg)
+    try {
+      await sendMessage(phone, "Something glitched on my end — try again?")
+    } catch (sendErr) {
+      console.error('[webhook] sendMessage failed after agent error:', sendErr instanceof Error ? sendErr.message : String(sendErr))
+    }
   }
 
   return NextResponse.json({ ok: true })
