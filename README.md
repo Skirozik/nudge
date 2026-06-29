@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/banner.png" width="120" alt="Nudge" />
+</p>
+
 # nudge
 
 **The reminder you can't ignore.**
@@ -225,8 +229,6 @@ Visit `http://localhost:3000` while the server is running.
 ## Roadmap
 
 - [ ] Voice call escalation via Twilio (if 5 texts aren't enough)
-- [ ] Syllabus screenshot parsing — photo your syllabus, Nudge extracts all assignments
-- [ ] Web dashboard: timezone settings, message history
 - [ ] Multi-instance support for scale (multiple BlueBubbles instances)
 
 ---
