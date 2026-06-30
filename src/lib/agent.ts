@@ -23,7 +23,7 @@ const TOOLS: Anthropic.Tool[] = [
         course: { type: 'string', description: 'Course or class name (optional)' },
         due_at: {
           type: 'string',
-          description: 'Due date and time in ISO 8601 UTC format, e.g. 2026-11-14T23:59:00Z',
+          description: 'Due date and time in ISO 8601 with the user\'s UTC offset, e.g. 2026-11-14T23:59:00-04:00. Never use Z.',
         },
         reminder_offsets: {
           type: 'array',
@@ -85,7 +85,7 @@ const TOOLS: Anthropic.Tool[] = [
         message: { type: 'string', description: 'The reminder message to send the user' },
         fire_at: {
           type: 'string',
-          description: 'When to send the reminder, in ISO 8601 UTC format',
+          description: 'When to send the reminder, in ISO 8601 with the user\'s UTC offset, e.g. 2026-06-29T19:10:00-04:00. Never use Z.',
         },
         persistent: {
           type: 'boolean',
@@ -231,6 +231,18 @@ export async function runAgent(userId: string, userMessage: string): Promise<str
     })
   }
 
+  const tzOffsetStr = (() => {
+    try {
+      const raw = new Intl.DateTimeFormat('en', {
+        timeZone: tz,
+        timeZoneName: 'longOffset',
+      }).formatToParts(nowUtc).find(p => p.type === 'timeZoneName')?.value ?? 'GMT+0'
+      return raw.replace('GMT', '') || '+00:00'
+    } catch {
+      return '+00:00'
+    }
+  })()
+
   const systemPrompt = `${PERSONAS[persona] ?? PERSONAS.coach}
 
 RULES (never break these):
@@ -253,7 +265,8 @@ TONE AND FORMATTING:
 - Lowercase is fine. Incomplete sentences are fine. Contractions always.
 - One or two emojis max per message, only when they feel natural.
 - Dashboard: ${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard — mention this if the user asks to manage things online or see their assignments on the web.
-- Current time: ${nowLocal} (${tz}) — use this as "now" for all relative time calculations. UTC: ${nowUtc.toISOString()}`
+- Current time: ${nowLocal} (${tz}, UTC${tzOffsetStr})
+- CRITICAL — tool time format: when calling any tool with due_at or fire_at, ALWAYS use offset-aware ISO 8601: YYYY-MM-DDTHH:MM:SS${tzOffsetStr}. NEVER use Z suffix (that means UTC and will schedule at the wrong local time). Example: if user says "11:59 PM tonight", use ${nowUtc.toISOString().slice(0, 10)}T23:59:00${tzOffsetStr}`
 
   // Get or create conversation history
   let convo = await prisma.conversation.findUnique({ where: { userId } })
