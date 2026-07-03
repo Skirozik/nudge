@@ -4,7 +4,7 @@
 
 # nudge
 
-**The reminder you can't ignore.**
+**The reminder you can't ignore.** · [nudgebuddy.net](https://nudgebuddy.net)
 
 Nudge is a self-hosted AI study buddy that texts you on iMessage. Tell it what's due, and it'll hound you until you do it — built specifically for people with real ADHD.
 
