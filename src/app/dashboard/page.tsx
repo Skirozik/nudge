@@ -38,6 +38,11 @@ export default async function DashboardPage() {
     include: { assignment: { select: { title: true, course: true } } },
   })
 
+  const oneOffReminders = await prisma.oneOffReminder.findMany({
+    where: { userId: user.id, sent: false, fireAt: { gte: new Date() } },
+    orderBy: { fireAt: 'asc' },
+  })
+
   return (
     <DashboardClient
       user={{ phone: user.phone, persona: user.persona, timezone: user.timezone }}
@@ -53,6 +58,11 @@ export default async function DashboardPage() {
         sendAt: r.sendAt.toISOString(),
         assignmentTitle: r.assignment.title,
         assignmentCourse: r.assignment.course,
+      }))}
+      initialOneOffReminders={oneOffReminders.map((r) => ({
+        id: r.id,
+        message: r.message,
+        fireAt: r.fireAt.toISOString(),
       }))}
     />
   )

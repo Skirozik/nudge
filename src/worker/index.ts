@@ -308,6 +308,14 @@ const worker = new Worker(
         persistent?: boolean
         oneOffReminderId?: string
       }
+      // If the reminder was dismissed from the dashboard it will have been deleted
+      if (oneOffReminderId) {
+        const exists = await prisma.oneOffReminder.findUnique({ where: { id: oneOffReminderId } })
+        if (!exists) {
+          console.log(`[worker] One-off reminder ${oneOffReminderId} was dismissed — skipping`)
+          return
+        }
+      }
       console.log(`[worker] Sending one-off reminder to user ${userId}`)
       const user = await prisma.user.findUnique({ where: { id: userId } })
       if (user && !user.optedOut) {

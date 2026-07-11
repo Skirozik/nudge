@@ -94,7 +94,7 @@ export async function scheduleOneOffReminder(
   })
 
   const delay = Math.max(0, fireAt.getTime() - Date.now())
-  await reminderQueue.add(
+  const job = await reminderQueue.add(
     'send-one-off',
     { userId, message, persistent, oneOffReminderId: record.id },
     {
@@ -105,6 +105,12 @@ export async function scheduleOneOffReminder(
       removeOnFail: false,
     }
   )
+  if (job.id) {
+    await prisma.oneOffReminder.update({
+      where: { id: record.id },
+      data: { bullmqJobId: job.id },
+    })
+  }
 }
 
 export async function scheduleCheckIn(params: {

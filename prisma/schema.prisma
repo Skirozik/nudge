@@ -82,14 +82,15 @@ enum Direction {
 }
 
 model OneOffReminder {
-  id         String   @id @default(uuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id])
-  message    String
-  fireAt     DateTime
-  sent       Boolean  @default(false)
-  persistent Boolean  @default(false)
-  createdAt  DateTime @default(now())
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  message     String
+  fireAt      DateTime
+  sent        Boolean  @default(false)
+  persistent  Boolean  @default(false)
+  bullmqJobId String?
+  createdAt   DateTime @default(now())
 }
 
 model OtpCode {
