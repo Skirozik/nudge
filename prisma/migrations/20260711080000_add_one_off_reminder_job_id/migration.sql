@@ -1,1 +1,1 @@
-ALTER TABLE "OneOffReminder" ADD COLUMN "bullmqJobId" TEXT;
+ALTER TABLE "OneOffReminder" ADD COLUMN IF NOT EXISTS "bullmqJobId" TEXT;
