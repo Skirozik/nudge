@@ -27,11 +27,18 @@ interface UpcomingReminder {
   assignmentCourse: string | null
 }
 
+interface OneOffReminder {
+  id: string
+  message: string
+  fireAt: string
+}
+
 interface Props {
   user: { phone: string; persona: string; timezone: string }
   initialAssignments: Assignment[]
   messages: Message[]
   upcomingReminders: UpcomingReminder[]
+  initialOneOffReminders: OneOffReminder[]
 }
 
 const PERSONAS = [
@@ -69,9 +76,11 @@ function formatMessageTime(iso: string): string {
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
-export default function DashboardClient({ user, initialAssignments, messages, upcomingReminders }: Props) {
+export default function DashboardClient({ user, initialAssignments, messages, upcomingReminders, initialOneOffReminders }: Props) {
   const router = useRouter()
   const [assignments, setAssignments] = useState<Assignment[]>(initialAssignments)
+  const [oneOffReminders, setOneOffReminders] = useState<OneOffReminder[]>(initialOneOffReminders)
+  const [dismissing, setDismissing] = useState<string | null>(null)
   const [persona, setPersona] = useState(user.persona)
   const [personaSaving, setPersonaSaving] = useState(false)
   const [completing, setCompleting] = useState<string | null>(null)
@@ -139,6 +148,19 @@ export default function DashboardClient({ user, initialAssignments, messages, up
       setAssignmentError('Failed to cancel — try again')
     }
     setCanceling(null)
+  }
+
+  async function dismissReminder(id: string) {
+    setDismissing(id)
+    const res = await fetch('/api/dashboard/reminders', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    if (res.ok) {
+      setOneOffReminders((prev) => prev.filter((r) => r.id !== id))
+    }
+    setDismissing(null)
   }
 
   async function addAssignment(e: React.FormEvent) {
@@ -424,6 +446,34 @@ export default function DashboardClient({ user, initialAssignments, messages, up
             </ul>
           )}
         </section>
+
+        {/* ── One-off reminders ────────────────────── */}
+        {oneOffReminders.length > 0 && (
+          <section>
+            <h2 className="text-[15px] font-semibold tracking-[-0.01em] mb-4">Reminders</h2>
+            <ul className="space-y-2">
+              {oneOffReminders.map((r) => (
+                <li
+                  key={r.id}
+                  className="bg-[#111] border border-[#1E1E1E] rounded-lg px-4 py-3.5 flex items-center gap-4"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[14px] font-medium truncate">{r.message}</p>
+                    <p className="text-[12px] text-[#666] mt-0.5">{formatTime(r.fireAt)}</p>
+                  </div>
+                  <button
+                    onClick={() => dismissReminder(r.id)}
+                    disabled={dismissing === r.id}
+                    className="text-[#3D3D3D] hover:text-red-500 transition-colors disabled:opacity-40 flex-shrink-0 text-lg leading-none"
+                    title="Dismiss reminder"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         {/* ── Upcoming reminders ───────────────────── */}
         {upcomingReminders.length > 0 && (
