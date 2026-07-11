@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { createSession, sessionCookieOptions } from '@/lib/session'
+import { normalizePhone } from '@/lib/phone'
 
 export const runtime = 'nodejs'
 
@@ -10,9 +11,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Phone and code required' }, { status: 400 })
   }
 
+  const normalized = normalizePhone(phone)
+
   const otp = await prisma.otpCode.findFirst({
     where: {
-      phone: phone.trim(),
+      phone: normalized,
       used: false,
       expiresAt: { gte: new Date() },
     },
@@ -37,7 +40,7 @@ export async function POST(req: NextRequest) {
 
   await prisma.otpCode.update({ where: { id: otp.id }, data: { used: true } })
 
-  const user = await prisma.user.findUnique({ where: { phone: phone.trim() } })
+  const user = await prisma.user.findUnique({ where: { phone: normalized } })
   if (!user) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 })
   }

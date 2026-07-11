@@ -33,7 +33,9 @@ export async function scheduleReminders(assignment: {
         continue
       }
     } else {
-      sendAt = shiftToSocialHour(rawSendAt, tz)
+      const shifted = shiftToSocialHour(rawSendAt, tz)
+      // Don't let quiet-hours shift push the reminder past the assignment's due date
+      sendAt = shifted < assignment.dueAt ? shifted : rawSendAt
     }
 
     const delay = Math.max(0, sendAt.getTime() - Date.now())
@@ -45,7 +47,7 @@ export async function scheduleReminders(assignment: {
         delay,
         attempts: 3,
         backoff: { type: 'exponential', delay: 60_000 },
-        removeOnComplete: false,
+        removeOnComplete: { count: 100 },
         removeOnFail: false,
       }
     )
@@ -82,15 +84,43 @@ export async function scheduleOneOffReminder(
   fireAt: Date,
   persistent = false
 ): Promise<void> {
+  if (!Number.isFinite(fireAt.getTime())) {
+    throw new Error(`Invalid reminder time: "${fireAt}"`)
+  }
+
+  // Persist so the agent can list pending reminders via list_assignments
+  const record = await prisma.oneOffReminder.create({
+    data: { userId, message, fireAt, persistent },
+  })
+
   const delay = Math.max(0, fireAt.getTime() - Date.now())
   await reminderQueue.add(
     'send-one-off',
-    { userId, message, persistent },
+    { userId, message, persistent, oneOffReminderId: record.id },
     {
       delay,
       attempts: 3,
       backoff: { type: 'exponential', delay: 60_000 },
       removeOnComplete: true,
+      removeOnFail: false,
+    }
+  )
+}
+
+export async function scheduleCheckIn(params: {
+  assignmentId: string
+  userId: string
+  dueAt: Date
+}): Promise<void> {
+  const delay = Math.max(0, params.dueAt.getTime() + 30 * 60 * 1000 - Date.now())
+  await reminderQueue.add(
+    'send-checkin',
+    { assignmentId: params.assignmentId, userId: params.userId },
+    {
+      delay,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 60_000 },
+      removeOnComplete: { count: 100 },
       removeOnFail: false,
     }
   )

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { sendMessage, sendTypingIndicator, downloadAttachment } from '@/lib/bluebubbles'
 import { runAgent } from '@/lib/agent'
 import { parseSyllabusImage } from '@/lib/visionParser'
+import { normalizePhone } from '@/lib/phone'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -74,15 +75,16 @@ export async function POST(req: NextRequest) {
   if (!phone) {
     return NextResponse.json({ error: 'No phone address in payload' }, { status: 400 })
   }
+  const normalizedPhone = normalizePhone(phone)
 
   // Handle image attachments (syllabus photos)
   console.log('[webhook] payload data keys:', JSON.stringify({ hasAttachments: data.hasAttachments, attachmentCount: data.attachments?.length, mimeTypes: data.attachments?.map(a => a.mimeType), textLength: data.text?.length }))
   const imageAttachment = data.attachments?.find((a) => a.mimeType?.startsWith('image/'))
 
   if (imageAttachment) {
-    let user = await prisma.user.findUnique({ where: { phone } })
+    let user = await prisma.user.findUnique({ where: { phone: normalizedPhone } })
     if (user?.optedOut) return NextResponse.json({ ok: true })
-    if (!user) user = await prisma.user.create({ data: { phone } })
+    if (!user) user = await prisma.user.create({ data: { phone: normalizedPhone } })
 
     await prisma.message.create({ data: { userId: user.id, direction: 'in', body: '[photo]' } })
     void sendTypingIndicator(phone)
@@ -103,15 +105,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true })
       }
 
+      const userTz = user.timezone ?? 'America/New_York'
       const lines = extracted.map((a, i) => {
-        const due = a.dueAt ? new Date(a.dueAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'no date'
+        const due = a.dueAt ? new Date(a.dueAt).toLocaleDateString('en-US', { timeZone: userTz, month: 'short', day: 'numeric' }) : 'no date'
         return `${i + 1}. ${a.title}${a.course ? ` (${a.course})` : ''} — due ${due}`
       })
       const preview = `found ${extracted.length} assignment${extracted.length === 1 ? '' : 's'} in your syllabus:\n${lines.join('\n')}`
       await sendMessage(phone, preview)
       await prisma.message.create({ data: { userId: user.id, direction: 'out', body: preview } })
 
-      const syntheticMsg = `[The user sent a syllabus photo. I extracted these assignments: ${JSON.stringify(extracted)}. Ask the user which ones to save, then call add_assignment for each confirmed one with source set to "screenshot". If they say "save all" or "all of them", save every one without asking about each individually — but still confirm reminder preferences in bulk.]`
+      const captionText = data.text?.trim()
+      const syntheticMsg = `[The user sent a syllabus photo${captionText ? ` and also said: "${captionText}"` : ''}. I extracted these assignments: ${JSON.stringify(extracted)}. Ask the user which ones to save, then call add_assignment for each confirmed one with source set to "screenshot". If they say "save all" or "all of them", save every one without asking about each individually — but still confirm reminder preferences in bulk.]`
       const agentReply = await runAgent(user.id, syntheticMsg)
       if (agentReply) {
         await sendMessage(phone, agentReply)
@@ -119,7 +123,11 @@ export async function POST(req: NextRequest) {
       }
     } catch (err) {
       console.error('[webhook] image handling error:', err)
-      await sendMessage(phone, "something went wrong reading that photo — try again?")
+      try {
+        await sendMessage(phone, "something went wrong reading that photo — try again?")
+      } catch (sendErr) {
+        console.error('[webhook] sendMessage failed after image error:', sendErr instanceof Error ? sendErr.message : String(sendErr))
+      }
     }
 
     return NextResponse.json({ ok: true })
@@ -130,19 +138,12 @@ export async function POST(req: NextRequest) {
 
   const upper = text.toUpperCase()
 
-  // DASHBOARD keyword — send link
-  if (upper === 'DASHBOARD') {
-    const dashUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard`
-    await sendMessage(phone, `Here's your dashboard: ${dashUrl}`)
-    return NextResponse.json({ ok: true })
-  }
-
   // STOP opt-out — carrier standard: no reply
   if (upper === 'STOP') {
     await prisma.user.upsert({
-      where: { phone },
+      where: { phone: normalizedPhone },
       update: { optedOut: true },
-      create: { phone, optedOut: true },
+      create: { phone: normalizedPhone, optedOut: true },
     })
     return NextResponse.json({ ok: true })
   }
@@ -150,19 +151,27 @@ export async function POST(req: NextRequest) {
   // START opt back in
   if (upper === 'START') {
     await prisma.user.upsert({
-      where: { phone },
+      where: { phone: normalizedPhone },
       update: { optedOut: false },
-      create: { phone, optedOut: false },
+      create: { phone: normalizedPhone, optedOut: false },
     })
-    await sendMessage(phone, "You're back! I'm Nudge, your study buddy. What's due?")
+    await sendMessage(normalizedPhone, "You're back! I'm Nudge, your study buddy. What's due?")
     return NextResponse.json({ ok: true })
   }
 
   // Get or create user
-  let user = await prisma.user.findUnique({ where: { phone } })
+  let user = await prisma.user.findUnique({ where: { phone: normalizedPhone } })
   if (user?.optedOut) return NextResponse.json({ ok: true })
+
+  // DASHBOARD keyword — only reply to active (non-opted-out) users
+  if (upper === 'DASHBOARD') {
+    const dashUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard`
+    await sendMessage(normalizedPhone, `Here's your dashboard: ${dashUrl}`)
+    return NextResponse.json({ ok: true })
+  }
+
   const isNewUser = !user
-  if (!user) user = await prisma.user.create({ data: { phone } })
+  if (!user) user = await prisma.user.create({ data: { phone: normalizedPhone } })
 
   // Log inbound
   await prisma.message.create({
@@ -173,16 +182,16 @@ export async function POST(req: NextRequest) {
   if (isNewUser) {
     try {
       const welcome = "HI! I'm Nudge! I send you reminders for your assignments and daily tasks so nothing slips through. just tell me what's due and I'll handle the rest 📚"
-      await sendMessage(phone, welcome)
+      await sendMessage(normalizedPhone, welcome)
       await prisma.message.create({ data: { userId: user.id, direction: 'out', body: welcome } })
 
       const tip = "💡 Quick tip: add me to your allowed contacts so reminders get through even on Do Not Disturb → Settings › Focus › Do Not Disturb › People › Add."
-      await sendMessage(phone, tip)
+      await sendMessage(normalizedPhone, tip)
       await prisma.message.create({ data: { userId: user.id, direction: 'out', body: tip } })
 
       const dashUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard`
       const dashMsg = `You can also manage your assignments and settings at ${dashUrl}`
-      await sendMessage(phone, dashMsg)
+      await sendMessage(normalizedPhone, dashMsg)
       await prisma.message.create({ data: { userId: user.id, direction: 'out', body: dashMsg } })
     } catch (err) {
       console.error('[webhook] new user welcome error:', err)
@@ -191,11 +200,11 @@ export async function POST(req: NextRequest) {
   }
 
   // Run agent and reply
-  void sendTypingIndicator(phone)
+  void sendTypingIndicator(normalizedPhone)
   try {
     const reply = await runAgent(user.id, text)
     if (reply) {
-      await sendMessage(phone, reply)
+      await sendMessage(normalizedPhone, reply)
       await prisma.message.create({
         data: { userId: user.id, direction: 'out', body: reply },
       })

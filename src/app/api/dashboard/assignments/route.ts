@@ -72,8 +72,12 @@ export async function POST(req: NextRequest) {
       ? "🔁 I'll nag you on this one"
       : `📌 reminder ${offsets[0]}h before`
     const msg = `added "${assignment.title}"${assignment.course ? ` (${assignment.course})` : ''} — due ${due}. ${modeLabel}`
-    await sendMessage(user.phone, msg)
-    await prisma.message.create({ data: { userId: user.id, direction: 'out', body: msg } })
+    try {
+      await sendMessage(user.phone, msg)
+      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: msg } })
+    } catch (err) {
+      console.error('[dashboard] confirmation sendMessage failed:', err)
+    }
   }
 
   return NextResponse.json({
@@ -107,8 +111,12 @@ export async function PATCH(req: NextRequest) {
     const user = await prisma.user.findUnique({ where: { id: session.userId } })
     if (user) {
       const msg = `canceled "${assignment.title}" — reminders removed`
-      await sendMessage(user.phone, msg)
-      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: msg } })
+      try {
+        await sendMessage(user.phone, msg)
+        await prisma.message.create({ data: { userId: user.id, direction: 'out', body: msg } })
+      } catch (err) {
+        console.error('[dashboard] cancel sendMessage failed:', err)
+      }
     }
   }
 
