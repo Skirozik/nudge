@@ -1,8 +1,10 @@
 import { redirect } from 'next/navigation'
 import { getSessionUser } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
+import { reminderQueue } from '@/lib/queue'
 import DashboardClient from './DashboardClient'
 
+export const runtime = 'nodejs'
 export const metadata = { title: 'Dashboard — Nudge' }
 
 export default async function DashboardPage() {
@@ -38,10 +40,42 @@ export default async function DashboardPage() {
     include: { assignment: { select: { title: true, course: true } } },
   })
 
+  const now = new Date()
+
   const oneOffReminders = await prisma.oneOffReminder.findMany({
-    where: { userId: user.id, sent: false, fireAt: { gte: new Date() } },
+    where: { userId: user.id, sent: false, fireAt: { gte: now } },
     orderBy: { fireAt: 'asc' },
   })
+
+  // Compatibility shim: surface old reminders that only exist as BullMQ jobs
+  // (set before the OneOffReminder table existed). Once those jobs fire naturally
+  // this branch will always return an empty array and can be removed.
+  const dbJobIds = new Set(oneOffReminders.map((r) => r.bullmqJobId).filter(Boolean))
+  const delayedJobs = await reminderQueue.getDelayed().catch(() => [])
+  const redisOnlyReminders = delayedJobs
+    .filter((job) =>
+      job.name === 'send-one-off' &&
+      job.data.userId === user.id &&
+      !job.data.oneOffReminderId &&
+      !dbJobIds.has(job.id!) &&
+      new Date(job.timestamp + job.delay) >= now
+    )
+    .map((job) => ({
+      id: job.id!,
+      message: job.data.message as string,
+      fireAt: new Date(job.timestamp + job.delay).toISOString(),
+      source: 'redis' as const,
+    }))
+
+  const allOneOffReminders = [
+    ...oneOffReminders.map((r) => ({
+      id: r.id,
+      message: r.message,
+      fireAt: r.fireAt.toISOString(),
+      source: 'db' as const,
+    })),
+    ...redisOnlyReminders,
+  ].sort((a, b) => new Date(a.fireAt).getTime() - new Date(b.fireAt).getTime())
 
   return (
     <DashboardClient
@@ -59,11 +93,7 @@ export default async function DashboardPage() {
         assignmentTitle: r.assignment.title,
         assignmentCourse: r.assignment.course,
       }))}
-      initialOneOffReminders={oneOffReminders.map((r) => ({
-        id: r.id,
-        message: r.message,
-        fireAt: r.fireAt.toISOString(),
-      }))}
+      initialOneOffReminders={allOneOffReminders}
     />
   )
 }

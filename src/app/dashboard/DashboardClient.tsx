@@ -31,6 +31,7 @@ interface OneOffReminder {
   id: string
   message: string
   fireAt: string
+  source: 'db' | 'redis'
 }
 
 interface Props {
@@ -150,12 +151,12 @@ export default function DashboardClient({ user, initialAssignments, messages, up
     setCanceling(null)
   }
 
-  async function dismissReminder(id: string) {
+  async function dismissReminder(id: string, source: 'db' | 'redis') {
     setDismissing(id)
     const res = await fetch('/api/dashboard/reminders', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id, source }),
     })
     if (res.ok) {
       setOneOffReminders((prev) => prev.filter((r) => r.id !== id))
@@ -462,7 +463,7 @@ export default function DashboardClient({ user, initialAssignments, messages, up
                     <p className="text-[12px] text-[#666] mt-0.5">{formatTime(r.fireAt)}</p>
                   </div>
                   <button
-                    onClick={() => dismissReminder(r.id)}
+                    onClick={() => dismissReminder(r.id, r.source)}
                     disabled={dismissing === r.id}
                     className="text-[#3D3D3D] hover:text-red-500 transition-colors disabled:opacity-40 flex-shrink-0 text-lg leading-none"
                     title="Dismiss reminder"
