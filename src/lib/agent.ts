@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from './prisma'
-import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder } from './queue'
+import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleCheckIn } from './queue'
 import { resolveTimezone } from './timezone'
 
 const client = new Anthropic()
@@ -46,7 +46,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'list_assignments',
-    description: "List the user's open assignments, sorted by due date soonest first.",
+    description: "List the user's open assignments and any pending one-off reminders, sorted by due date / fire time soonest first. Always call this when the user asks what they have to do, what's coming up, or what you're tracking for them.",
     input_schema: {
       type: 'object' as const,
       properties: {},
@@ -71,6 +71,22 @@ const TOOLS: Anthropic.Tool[] = [
       type: 'object' as const,
       properties: {
         assignment_id: { type: 'string', description: 'The assignment ID from list_assignments' },
+      },
+      required: ['assignment_id'],
+    },
+  },
+  {
+    name: 'update_assignment',
+    description:
+      'Update an existing open assignment. Use this after add_assignment to enable proof-of-submission check-in if the user agrees to it.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        assignment_id: { type: 'string', description: 'The assignment ID returned by add_assignment or from list_assignments' },
+        check_in: {
+          type: 'boolean',
+          description: 'If true, Nudge will text the user ~30 min after the due time asking if they submitted. Only set for academic assignments, not casual tasks.',
+        },
       },
       required: ['assignment_id'],
     },
@@ -153,17 +169,31 @@ async function executeTool(
     }
 
     case 'list_assignments': {
-      const assignments = await prisma.assignment.findMany({
-        where: { userId, status: 'open' },
-        orderBy: { dueAt: 'asc' },
-      })
-      if (assignments.length === 0) return []
-      return assignments.map((a) => ({
-        id: a.id,
-        title: a.title,
-        course: a.course ?? undefined,
-        due_at: a.dueAt.toISOString(),
-      }))
+      const now = new Date()
+      const [assignments, pendingReminders] = await Promise.all([
+        prisma.assignment.findMany({
+          where: { userId, status: 'open' },
+          orderBy: { dueAt: 'asc' },
+        }),
+        prisma.oneOffReminder.findMany({
+          where: { userId, sent: false, fireAt: { gte: now } },
+          orderBy: { fireAt: 'asc' },
+        }),
+      ])
+      return {
+        assignments: assignments.map((a) => ({
+          id: a.id,
+          title: a.title,
+          course: a.course ?? undefined,
+          due_at: a.dueAt.toISOString(),
+          awaiting_checkin: a.checkIn && a.dueAt < now && a.status === 'open',
+        })),
+        upcoming_reminders: pendingReminders.map((r) => ({
+          id: r.id,
+          message: r.message,
+          fire_at: r.fireAt.toISOString(),
+        })),
+      }
     }
 
     case 'complete_assignment': {
@@ -172,7 +202,8 @@ async function executeTool(
       if (!assignment || assignment.userId !== userId) return { error: 'Assignment not found' }
       await prisma.assignment.update({ where: { id: assignment_id }, data: { status: 'done' } })
       await cancelPendingReminders(assignment_id)
-      return { success: true }
+      const remaining = await prisma.assignment.count({ where: { userId, status: 'open' } })
+      return { success: true, all_done: remaining === 0 }
     }
 
     case 'cancel_assignment': {
@@ -181,6 +212,20 @@ async function executeTool(
       if (!assignment || assignment.userId !== userId) return { error: 'Assignment not found' }
       await prisma.assignment.update({ where: { id: assignment_id }, data: { status: 'canceled' } })
       await cancelPendingReminders(assignment_id)
+      return { success: true }
+    }
+
+    case 'update_assignment': {
+      const { assignment_id, check_in } = input as { assignment_id: string; check_in?: boolean }
+      const assignment = await prisma.assignment.findUnique({ where: { id: assignment_id } })
+      if (!assignment || assignment.userId !== userId) return { error: 'Assignment not found' }
+      await prisma.assignment.update({
+        where: { id: assignment_id },
+        data: { ...(check_in !== undefined && { checkIn: check_in }) },
+      })
+      if (check_in && !assignment.checkIn) {
+        await scheduleCheckIn({ assignmentId: assignment_id, userId, dueAt: assignment.dueAt })
+      }
       return { success: true }
     }
 
@@ -202,7 +247,7 @@ async function executeTool(
   }
 }
 
-export async function runAgent(userId: string, userMessage: string): Promise<string> {
+export async function runAgent(userId: string, userMessage: string, opts?: { lateReply?: boolean }): Promise<string> {
   const user = await prisma.user.findUnique({ where: { id: userId } })
   const persona = user?.persona ?? 'coach'
   const tz = user?.timezone ?? 'America/New_York'
@@ -243,6 +288,13 @@ export async function runAgent(userId: string, userMessage: string): Promise<str
     }
   })()
 
+  // Compute today's local date string (not UTC — important for users texting after 8 PM ET)
+  const offsetMatch = tzOffsetStr.match(/^([+-])(\d{2}):(\d{2})$/)
+  const offsetMs = offsetMatch
+    ? (parseInt(offsetMatch[2]) * 60 + parseInt(offsetMatch[3])) * 60_000 * (offsetMatch[1] === '-' ? -1 : 1)
+    : 0
+  const localDateStr = new Date(nowUtc.getTime() + offsetMs).toISOString().slice(0, 10)
+
   const systemPrompt = `${PERSONAS[persona] ?? PERSONAS.coach}
 
 RULES (never break these):
@@ -252,6 +304,9 @@ RULES (never break these):
 - When presenting times to the user, ALWAYS show them in the user's local timezone (${tz}), never in UTC.
 - Default reminder offset is 24 hours before due. Offer 48 hours too if they want extra lead time.
 - Always ask if they want one reminder or persistent (5 texts, 30 seconds apart, stops when they reply). Keep it casual like "want me to really nag you on this one?"
+- After saving a class or school assignment (not casual tasks like "take out trash"), casually ask "want me to check in after it's due to make sure you submitted it?" — if they say yes, call update_assignment with check_in=true and the assignment ID from the add_assignment result.
+- If list_assignments shows awaiting_checkin=true for any assignment, that one is past due. If the user says they turned it in, call complete_assignment to mark it done.
+- When complete_assignment returns all_done=true (zero open assignments left), briefly celebrate and ask what else they have coming up. Keep it short and natural.
 - If the user texts STOP, do not reply.
 - Keep replies short. You're texting, not writing an email.
 - Personality is seasoning, not the main dish. Never skip date confirmation to be funny.
@@ -265,8 +320,9 @@ TONE AND FORMATTING:
 - Lowercase is fine. Incomplete sentences are fine. Contractions always.
 - One or two emojis max per message, only when they feel natural.
 - Dashboard: ${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard — mention this if the user asks to manage things online or see their assignments on the web.
+${opts?.lateReply ? '- LATE REPLY: The server was briefly offline and this message was missed. Open your reply with a short casual apology like "sorry for the slow reply —" or "my bad, missed that —" then respond normally. Keep the apology to one phrase, not a whole sentence.' : ''}
 - Current time: ${nowLocal} (${tz}, UTC${tzOffsetStr})
-- CRITICAL — tool time format: when calling any tool with due_at or fire_at, ALWAYS use offset-aware ISO 8601: YYYY-MM-DDTHH:MM:SS${tzOffsetStr}. NEVER use Z suffix (that means UTC and will schedule at the wrong local time). Example: if user says "11:59 PM tonight", use ${nowUtc.toISOString().slice(0, 10)}T23:59:00${tzOffsetStr}`
+- CRITICAL — tool time format: when calling any tool with due_at or fire_at, ALWAYS use offset-aware ISO 8601: YYYY-MM-DDTHH:MM:SS${tzOffsetStr}. NEVER use Z suffix (that means UTC and will schedule at the wrong local time). Example: if user says "11:59 PM tonight", use ${localDateStr}T23:59:00${tzOffsetStr}`
 
   // Get or create conversation history
   let convo = await prisma.conversation.findUnique({ where: { userId } })
@@ -280,7 +336,26 @@ TONE AND FORMATTING:
     convo.updatedAt < thirtyMinAgo ? [] : (convo.messages as unknown as Anthropic.MessageParam[])
 
   messages = [...messages, { role: 'user', content: userMessage }]
-  if (messages.length > 20) messages = messages.slice(-20)
+
+  // Trim conversation to last N messages, never starting on an assistant turn or dangling tool_result
+  function safeTrim(msgs: Anthropic.MessageParam[], maxLen: number): Anthropic.MessageParam[] {
+    if (msgs.length <= maxLen) return msgs
+    let result = msgs.slice(-maxLen)
+    while (result.length > 0) {
+      const first = result[0]
+      const isAssistant = first.role === 'assistant'
+      const isToolResult =
+        first.role === 'user' &&
+        Array.isArray(first.content) &&
+        (first.content as Array<{ type: string }>).some((b) => b.type === 'tool_result')
+      if (isAssistant || isToolResult) {
+        result = result.slice(1)
+      } else {
+        break
+      }
+    }
+    return result
+  }
 
   // Agentic loop — keep going until end_turn (no more tool calls)
   while (true) {
@@ -288,13 +363,13 @@ TONE AND FORMATTING:
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: systemPrompt,
-      messages,
+      messages: safeTrim(messages, 20),
       tools: TOOLS,
     })
 
     messages = [...messages, { role: 'assistant', content: response.content }]
 
-    if (response.stop_reason === 'end_turn') {
+    if (response.stop_reason === 'end_turn' || response.stop_reason === 'max_tokens') {
       const text = response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
@@ -302,7 +377,7 @@ TONE AND FORMATTING:
 
       await prisma.conversation.update({
         where: { userId },
-        data: { messages: messages as object[] },
+        data: { messages: safeTrim(messages, 20) as object[] },
       })
 
       return text
@@ -313,11 +388,12 @@ TONE AND FORMATTING:
 
       for (const block of response.content) {
         if (block.type === 'tool_use') {
-          const result = await executeTool(
-            block.name,
-            block.input as Record<string, unknown>,
-            userId
-          )
+          let result: unknown
+          try {
+            result = await executeTool(block.name, block.input as Record<string, unknown>, userId)
+          } catch (err) {
+            result = { error: err instanceof Error ? err.message : String(err) }
+          }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,

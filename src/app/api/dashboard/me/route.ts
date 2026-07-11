@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
-import { resolveTimezone } from '@/lib/timezone'
+import { resolveTimezoneStrict } from '@/lib/timezone'
 
 export const runtime = 'nodejs'
 
@@ -35,7 +35,9 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (body.timezone !== undefined) {
-    data.timezone = resolveTimezone(body.timezone)
+    const resolved = resolveTimezoneStrict(body.timezone)
+    if (!resolved) return NextResponse.json({ error: 'Invalid timezone — try a city name like "Chicago" or an IANA timezone like "America/Chicago"' }, { status: 400 })
+    data.timezone = resolved
   }
 
   const user = await prisma.user.update({ where: { id: session.userId }, data })

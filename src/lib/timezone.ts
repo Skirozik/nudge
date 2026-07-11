@@ -35,7 +35,6 @@ const CITY_MAP: Record<string, string> = {
 export function resolveTimezone(input: string): string {
   const lower = input.toLowerCase().trim()
   const resolved = CITY_MAP[lower] ?? input
-  // Validate it's a real IANA timezone; fall back to New York if not
   try {
     Intl.DateTimeFormat('en-US', { timeZone: resolved })
     return resolved
@@ -44,23 +43,39 @@ export function resolveTimezone(input: string): string {
   }
 }
 
+export function resolveTimezoneStrict(input: string): string | null {
+  const lower = input.toLowerCase().trim()
+  const resolved = CITY_MAP[lower] ?? input
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: resolved })
+    return resolved
+  } catch {
+    return null
+  }
+}
+
+function getUtcOffsetMs(tz: string, date: Date): number {
+  const raw = new Intl.DateTimeFormat('en', {
+    timeZone: tz,
+    timeZoneName: 'longOffset',
+  }).formatToParts(date).find((p) => p.type === 'timeZoneName')?.value ?? 'GMT+0'
+  const match = raw.replace('GMT', '').match(/^([+-])(\d{2}):(\d{2})$/)
+  if (!match) return 0
+  const sign = match[1] === '+' ? 1 : -1
+  return sign * (parseInt(match[2]) * 60 + parseInt(match[3])) * 60_000
+}
+
 export function shiftToSocialHour(utcDate: Date, tz: string): Date {
   const localHour = parseInt(
     new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(utcDate),
     10
   )
 
-  if (localHour >= 0 && localHour < 9) {
-    // Get UTC offset for this timezone at this moment
-    const utcStr = utcDate.toLocaleString('en-US', { timeZone: 'UTC' })
-    const localStr = utcDate.toLocaleString('en-US', { timeZone: tz })
-    const offsetMs = new Date(localStr).getTime() - new Date(utcStr).getTime()
+  if (localHour >= 9) return utcDate
 
-    // Build a local "9:00am" on the same calendar day, then convert back to UTC
-    const localDate = new Date(utcDate.getTime() + offsetMs)
-    localDate.setHours(9, 0, 0, 0)
-    return new Date(localDate.getTime() - offsetMs)
-  }
-
-  return utcDate
+  // Pure UTC arithmetic — avoids server-timezone setHours bug
+  const offsetMs = getUtcOffsetMs(tz, utcDate)
+  const localTimeMs = utcDate.getTime() + offsetMs
+  const localMidnightMs = Math.floor(localTimeMs / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000)
+  return new Date(localMidnightMs + 9 * 60 * 60 * 1000 - offsetMs)
 }

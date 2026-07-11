@@ -42,7 +42,7 @@ export async function parseSyllabusImage(
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
+    max_tokens: 4096,
     messages: [
       {
         role: 'user',
@@ -74,6 +74,8 @@ Example: [{"title":"Midterm Exam","course":"BIO 101","dueAt":"2026-10-15T17:00:0
       },
     ],
   })
+
+  if (response.stop_reason === 'max_tokens') return []
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')

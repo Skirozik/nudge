@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { sendMessage } from '@/lib/bluebubbles'
+import { normalizePhone } from '@/lib/phone'
 
 export const runtime = 'nodejs'
 
@@ -14,9 +15,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Phone required' }, { status: 400 })
   }
 
-  const normalized = phone.trim()
+  const normalized = normalizePhone(phone)
 
   const user = await prisma.user.findUnique({ where: { phone: normalized } })
+  console.log(`[send-otp] phone="${normalized}" user_found=${!!user}`)
   if (!user) {
     // Same response whether user exists or not — avoids phone enumeration
     return NextResponse.json({ ok: true })
@@ -47,7 +49,15 @@ export async function POST(req: NextRequest) {
 
   await prisma.otpCode.create({ data: { phone: normalized, code, expiresAt } })
 
-  await sendMessage(normalized, `Your Nudge login code is ${code}. It expires in 10 minutes.`)
+  try {
+    await sendMessage(normalized, `Your Nudge login code is ${code}. It expires in 10 minutes.`)
+  } catch (err) {
+    console.error('[send-otp] sendMessage failed:', err instanceof Error ? err.message : String(err))
+    return NextResponse.json(
+      { error: 'Could not send code — message delivery failed. Try again in a moment.' },
+      { status: 502 }
+    )
+  }
 
   return NextResponse.json({ ok: true })
 }

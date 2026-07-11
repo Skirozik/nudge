@@ -2,9 +2,10 @@ import { SignJWT, jwtVerify } from 'jose'
 import { cookies } from 'next/headers'
 import { prisma } from './prisma'
 
-const SECRET = new TextEncoder().encode(
-  process.env.SESSION_SECRET ?? 'nudge-dev-secret-change-in-production'
-)
+if (!process.env.SESSION_SECRET) {
+  throw new Error('SESSION_SECRET env var is required but not set')
+}
+const SECRET = new TextEncoder().encode(process.env.SESSION_SECRET)
 
 const COOKIE = 'nudge_session'
 const TTL_DAYS = 30

@@ -14,6 +14,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const isEmail = phone.includes('@')
+
   async function sendOtp(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
@@ -55,82 +57,97 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center px-6">
-      <Link href="/" className="text-2xl font-bold tracking-tight mb-12">nudge</Link>
+    <div className="min-h-screen bg-[#080808] text-white flex flex-col">
 
-      <div className="w-full max-w-sm">
-        {step === 'phone' ? (
-          <form onSubmit={sendOtp} className="space-y-4">
-            <div>
-              <h1 className="text-2xl font-bold mb-1">Sign in</h1>
-              <p className="text-white/50 text-sm">
-                Enter the phone number you text Nudge from.
+      {/* Nav */}
+      <nav className="px-8 sm:px-10 h-16 flex items-center">
+        <Link href="/" className="text-[15px] font-semibold tracking-[-0.01em]">
+          nudge
+        </Link>
+      </nav>
+
+      {/* Form */}
+      <div className="flex-1 flex items-center justify-center px-6 pb-20">
+        <div className="w-full max-w-[340px]">
+
+          {step === 'phone' ? (
+            <form onSubmit={sendOtp} className="space-y-4">
+              <div className="mb-8">
+                <h1 className="text-[28px] font-bold tracking-[-0.02em] mb-2">Sign in</h1>
+                <p className="text-[14px] text-[#8E8E93]">
+                  Enter the phone number or Apple ID email you text Nudge from.
+                </p>
+              </div>
+
+              <input
+                type="text"
+                inputMode={isEmail ? 'email' : 'tel'}
+                placeholder="+1 (555) 000-0000 or you@icloud.com"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                autoComplete="username"
+                required
+                className="w-full bg-[#111] border border-[#1E1E1E] rounded-md px-4 py-3 text-[15px] text-white placeholder:text-[#48484A] focus:outline-none focus:border-[#007AFF] transition-colors"
+              />
+
+              {error && <p className="text-[13px] text-red-400">{error}</p>}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-[#007AFF] hover:bg-[#0071E3] disabled:opacity-40 transition-colors text-white font-semibold py-3 rounded-lg text-[15px]"
+              >
+                {loading ? 'Sending…' : 'Send code'}
+              </button>
+
+              <p className="text-[12px] text-[#48484A] text-center pt-1">
+                No account? Text{' '}
+                <code className="font-mono text-[#666]">hinudge@icloud.com</code>
+                {' '}on iMessage first.
               </p>
-            </div>
+            </form>
 
-            <input
-              type="tel"
-              placeholder="+1 (555) 000-0000"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              required
-              className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-[#007AFF] transition-colors"
-            />
+          ) : (
+            <form onSubmit={verifyOtp} className="space-y-4">
+              <div className="mb-8">
+                <h1 className="text-[28px] font-bold tracking-[-0.02em] mb-2">Check your texts</h1>
+                <p className="text-[14px] text-[#8E8E93]">
+                  Code sent to <span className="text-white/80">{phone}</span>.
+                </p>
+              </div>
 
-            {error && <p className="text-red-400 text-sm">{error}</p>}
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="000000"
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                required
+                maxLength={6}
+                className="w-full bg-[#111] border border-[#1E1E1E] rounded-md px-4 py-3 text-white placeholder:text-[#48484A] focus:outline-none focus:border-[#007AFF] transition-colors text-center text-[28px] tracking-[0.25em] font-mono"
+              />
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-[#007AFF] hover:bg-[#0066DD] disabled:opacity-50 transition-colors text-white font-semibold py-3 rounded-xl"
-            >
-              {loading ? 'Sending...' : 'Send code'}
-            </button>
+              {error && <p className="text-[13px] text-red-400">{error}</p>}
 
-            <p className="text-white/30 text-xs text-center">
-              Don&apos;t have an account? Text{' '}
-              <span className="font-mono text-white/50">hinudge@icloud.com</span> on iMessage first.
-            </p>
-          </form>
-        ) : (
-          <form onSubmit={verifyOtp} className="space-y-4">
-            <div>
-              <h1 className="text-2xl font-bold mb-1">Check your texts</h1>
-              <p className="text-white/50 text-sm">
-                Nudge sent a 6-digit code to <span className="text-white/70">{phone}</span> via iMessage.
-              </p>
-            </div>
+              <button
+                type="submit"
+                disabled={loading || code.length < 6}
+                className="w-full bg-[#007AFF] hover:bg-[#0071E3] disabled:opacity-40 transition-colors text-white font-semibold py-3 rounded-lg text-[15px]"
+              >
+                {loading ? 'Verifying…' : 'Sign in'}
+              </button>
 
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="123456"
-              value={code}
-              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              required
-              maxLength={6}
-              className="w-full bg-white/10 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-[#007AFF] transition-colors text-center text-2xl tracking-widest font-mono"
-            />
+              <button
+                type="button"
+                onClick={() => { setStep('phone'); setCode(''); setError('') }}
+                className="w-full text-[#48484A] text-[13px] hover:text-[#888] transition-colors"
+              >
+                Use a different number
+              </button>
+            </form>
+          )}
 
-            {error && <p className="text-red-400 text-sm">{error}</p>}
-
-            <button
-              type="submit"
-              disabled={loading || code.length < 6}
-              className="w-full bg-[#007AFF] hover:bg-[#0066DD] disabled:opacity-50 transition-colors text-white font-semibold py-3 rounded-xl"
-            >
-              {loading ? 'Verifying...' : 'Sign in'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { setStep('phone'); setCode(''); setError('') }}
-              className="w-full text-white/40 text-sm hover:text-white/60 transition-colors"
-            >
-              Use a different number
-            </button>
-          </form>
-        )}
+        </div>
       </div>
     </div>
   )

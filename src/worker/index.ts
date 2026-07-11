@@ -3,7 +3,9 @@ import { Worker } from 'bullmq'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '../lib/prisma'
 import { sendMessage } from '../lib/bluebubbles'
-import { reminderQueue, enqueueReminder, scheduleFollowUp } from '../lib/queue'
+import { runAgent } from '../lib/agent'
+import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleCheckIn } from '../lib/queue'
+import { normalizePhone } from '../lib/phone'
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
 
@@ -140,6 +142,117 @@ async function processReminder(assignmentId: string | undefined): Promise<void> 
   }
 }
 
+async function recoverMissedMessages(): Promise<void> {
+  const url = process.env.BLUEBUBBLES_URL
+  const password = process.env.BLUEBUBBLES_PASSWORD
+  if (!url || !password) return
+
+  // Look back at most 24 hours; use our most recent inbound message as the floor
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
+  const lastSeen = await prisma.message.findFirst({
+    where: { direction: 'in', createdAt: { gte: cutoff } },
+    orderBy: { createdAt: 'desc' },
+  })
+  // Overlap by 2 min to catch any race between webhook and job
+  const sinceMs = lastSeen
+    ? lastSeen.createdAt.getTime() - 2 * 60 * 1000
+    : cutoff.getTime()
+
+  let messages: Array<{
+    guid: string
+    text?: string
+    isFromMe: boolean
+    dateCreated: number
+    handle?: { address: string }
+    chats?: Array<{ guid: string }>
+  }>
+
+  try {
+    const res = await fetch(
+      `${url}/api/v1/message/query?password=${encodeURIComponent(password)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 50, sort: 'ASC', after: sinceMs, with: ['handle', 'chat'] }),
+      }
+    )
+    if (!res.ok) {
+      console.log(`[worker] BlueBubbles message query returned ${res.status} — skipping missed message recovery`)
+      return
+    }
+    const json = await res.json()
+    messages = json.data ?? []
+  } catch {
+    return // BlueBubbles still unreachable — skip quietly
+  }
+
+  const candidates = messages.filter(
+    (m) =>
+      !m.isFromMe &&
+      m.text?.trim() &&
+      !m.chats?.[0]?.guid?.includes(';+;')
+  )
+
+  if (candidates.length === 0) return
+  console.log(`[worker] Checking ${candidates.length} recent BlueBubbles messages for missed ones...`)
+
+  for (const m of candidates) {
+    const phone = m.handle?.address
+    if (!phone) continue
+    const body = m.text!.trim()
+    const msgTime = new Date(m.dateCreated)
+
+    // Skip if we already have this message (processed via webhook)
+    const alreadyHandled = await prisma.message.findFirst({
+      where: {
+        direction: 'in',
+        body,
+        user: { phone },
+        createdAt: {
+          gte: new Date(msgTime.getTime() - 2 * 60 * 1000),
+          lte: new Date(msgTime.getTime() + 2 * 60 * 1000),
+        },
+      },
+    })
+    if (alreadyHandled) continue
+
+    // Honor STOP/START keywords — do not replay through the agent
+    const upper = body.toUpperCase()
+    if (upper === 'STOP') {
+      const normalized = normalizePhone(phone)
+      await prisma.user.upsert({ where: { phone: normalized }, update: { optedOut: true }, create: { phone: normalized, optedOut: true } })
+      continue
+    }
+    if (upper === 'START') {
+      const normalized = normalizePhone(phone)
+      await prisma.user.upsert({ where: { phone: normalized }, update: { optedOut: false }, create: { phone: normalized, optedOut: false } })
+      try { await sendMessage(normalized, "You're back! I'm Nudge, your study buddy. What's due?") } catch {}
+      continue
+    }
+
+    console.log(`[worker] Replaying missed message from ${phone}: "${body.slice(0, 60)}"`)
+
+    const normalized = normalizePhone(phone)
+    let user = await prisma.user.findUnique({ where: { phone: normalized } })
+    if (user?.optedOut) continue
+    if (!user) user = await prisma.user.create({ data: { phone: normalized } })
+
+    await prisma.message.create({ data: { userId: user.id, direction: 'in', body } })
+
+    try {
+      const reply = await runAgent(user.id, body, { lateReply: true })
+      if (reply) {
+        await sendMessage(normalized, reply)
+        await prisma.message.create({ data: { userId: user.id, direction: 'out', body: reply } })
+      }
+    } catch (err) {
+      console.error(`[worker] Failed to replay missed message from ${normalized}:`, err)
+    }
+
+    await new Promise((r) => setTimeout(r, 500))
+  }
+}
+
 async function recoverOnStartup(): Promise<void> {
   console.log('[worker] Running startup recovery...')
 
@@ -150,12 +263,16 @@ async function recoverOnStartup(): Promise<void> {
 
   for (const reminder of missed) {
     if (reminder.assignment.status === 'open' && !reminder.assignment.user.optedOut) {
-      console.log(`[worker] Sending missed reminder for ${reminder.assignmentId}`)
-      try {
-        await processReminder(reminder.assignmentId)
-      } catch (e) {
-        console.error('[worker] Failed to send missed reminder:', e)
+      if (!reminder.bullmqJobId) {
+        // Job was never created — manually send to avoid racing BullMQ-promoted jobs
+        console.log(`[worker] Sending missed reminder for ${reminder.assignmentId} (no BullMQ job)`)
+        try {
+          await processReminder(reminder.assignmentId)
+        } catch (e) {
+          console.error('[worker] Failed to send missed reminder:', e)
+        }
       }
+      // else: BullMQ job exists and will be promoted at startup — let it fire normally
     } else {
       await prisma.reminder.update({ where: { id: reminder.id }, data: { sent: true } })
     }
@@ -178,23 +295,35 @@ async function recoverOnStartup(): Promise<void> {
   }
 
   console.log('[worker] Recovery complete')
+  await recoverMissedMessages()
 }
 
 const worker = new Worker(
   'reminders',
   async (job) => {
     if (job.name === 'send-one-off') {
-      const { userId, message, persistent } = job.data as { userId: string; message: string; persistent?: boolean }
+      const { userId, message, persistent, oneOffReminderId } = job.data as {
+        userId: string
+        message: string
+        persistent?: boolean
+        oneOffReminderId?: string
+      }
       console.log(`[worker] Sending one-off reminder to user ${userId}`)
       const user = await prisma.user.findUnique({ where: { id: userId } })
       if (user && !user.optedOut) {
+        const sentAfter = new Date().toISOString()
         await sendMessage(user.phone, message)
         await prisma.message.create({ data: { userId, direction: 'out', body: message } })
         await appendToConversation(userId, message)
         if (persistent) {
-          const sentAfter = new Date().toISOString()
           await scheduleFollowUp({ userId, oneOffMessage: message, followUpNumber: 0, sentAfter })
         }
+      }
+      if (oneOffReminderId) {
+        await prisma.oneOffReminder.update({
+          where: { id: oneOffReminderId },
+          data: { sent: true },
+        })
       }
       return
     }
@@ -250,16 +379,112 @@ const worker = new Worker(
       return
     }
 
+    if (job.name === 'send-checkin') {
+      const { assignmentId, userId } = job.data as { assignmentId: string; userId: string }
+      const assignment = await prisma.assignment.findUnique({
+        where: { id: assignmentId },
+        include: { user: true },
+      })
+      if (!assignment || !assignment.checkIn || assignment.status !== 'open' || assignment.user.optedOut || assignment.checkInAt) return
+
+      const label = assignment.title + (assignment.course ? ` for ${assignment.course}` : '')
+      const msg = `hey did you submit your ${label}?`
+      const sentAt = new Date()
+      await sendMessage(assignment.user.phone, msg)
+      await prisma.assignment.update({ where: { id: assignmentId }, data: { checkInAt: sentAt } })
+      await prisma.message.create({ data: { userId, direction: 'out', body: msg } })
+      await appendToConversation(userId, msg)
+
+      await reminderQueue.add(
+        'send-checkin-followup',
+        { assignmentId, userId, followUpNumber: 0, sentAfter: sentAt.toISOString() },
+        { delay: 60 * 60 * 1000, attempts: 3, backoff: { type: 'fixed', delay: 60_000 }, removeOnComplete: true, removeOnFail: false }
+      )
+      return
+    }
+
+    if (job.name === 'send-checkin-followup') {
+      const { assignmentId, userId, followUpNumber, sentAfter } = job.data as {
+        assignmentId: string; userId: string; followUpNumber: number; sentAfter: string
+      }
+      const assignment = await prisma.assignment.findUnique({
+        where: { id: assignmentId },
+        include: { user: true },
+      })
+      if (!assignment || assignment.status !== 'open' || assignment.user.optedOut) return
+
+      const replied = await prisma.message.findFirst({
+        where: { userId, direction: 'in', createdAt: { gte: new Date(sentAfter) } },
+      })
+      if (replied || followUpNumber >= 2) return
+
+      const nags = [
+        `still waiting on that ${assignment.title} confirmation 👀`,
+        `ok last time i'll ask — did you submit ${assignment.title}? just reply yes or no`,
+      ]
+      const msg = nags[followUpNumber]
+      const nextSentAt = new Date()
+      await sendMessage(assignment.user.phone, msg)
+      await prisma.message.create({ data: { userId, direction: 'out', body: msg } })
+      await appendToConversation(userId, msg)
+
+      await reminderQueue.add(
+        'send-checkin-followup',
+        { assignmentId, userId, followUpNumber: followUpNumber + 1, sentAfter: nextSentAt.toISOString() },
+        { delay: 60 * 60 * 1000, attempts: 3, backoff: { type: 'fixed', delay: 60_000 }, removeOnComplete: true, removeOnFail: false }
+      )
+      return
+    }
+
+    if (job.name === 'send-monday-checkin') {
+      const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)
+      const users = await prisma.user.findMany({
+        where: {
+          optedOut: false,
+          assignments: { none: { status: 'open' } },
+          messages: { none: { direction: 'in', createdAt: { gt: fiveDaysAgo } } },
+        },
+        include: { _count: { select: { messages: true } } },
+      })
+
+      for (const user of users) {
+        if (user._count.messages === 0) continue
+        try {
+          const msg = "new week, what's on your plate? 📚"
+          await sendMessage(user.phone, msg)
+          await prisma.message.create({ data: { userId: user.id, direction: 'out', body: msg } })
+          await appendToConversation(user.id, msg)
+        } catch (err) {
+          console.error(`[worker] Monday check-in failed for user ${user.id}:`, err)
+        }
+        await new Promise((r) => setTimeout(r, 300))
+      }
+      console.log(`[worker] Monday check-in sent to ${users.filter(u => u._count.messages > 0).length} users`)
+      return
+    }
+
     const { assignmentId } = job.data as { assignmentId: string }
     console.log(`[worker] Processing reminder for assignment ${assignmentId}`)
     await processReminder(assignmentId)
   },
-  { connection: workerConnection }
+  {
+    connection: workerConnection,
+    stalledInterval: 60_000,
+    skipLockRenewal: true,
+    drainDelay: 10_000,
+  }
 )
 
 worker.on('completed', (job) => console.log(`[worker] Job ${job.id} completed`))
 worker.on('failed', (job, err) => console.error(`[worker] Job ${job?.id} failed:`, err.message))
+worker.on('error', (err) => console.error('[worker] Worker error:', err))
+reminderQueue.on('error', (err) => console.error('[queue] Queue error:', err))
 
 recoverOnStartup().catch((e) => console.error('[worker] Startup recovery failed:', e))
+
+reminderQueue.add('send-monday-checkin', {}, {
+  repeat: { pattern: '0 13 * * 1' }, // Monday 9 AM ET (UTC-4)
+  jobId: 'monday-checkin-cron',
+}).catch((e) => console.error('[worker] Failed to register Monday cron:', e))
 
 console.log('[worker] Nudge worker started')
