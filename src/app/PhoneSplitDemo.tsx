@@ -219,7 +219,7 @@ export default function PhoneSplitDemo() {
       {/* Light copy — sits on top, masked so it only shows where the page has lightened */}
       <div
         ref={maskRef}
-        style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+        style={{ position: 'absolute', inset: 0, pointerEvents: 'none', clipPath: 'inset(0 round 58px)' }}
       >
         <IPhoneDemo theme="light" externalChatRef={lightChatRef} />
       </div>
