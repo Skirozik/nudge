@@ -478,38 +478,43 @@ export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDe
         .nudge-demo .them.gt .bubble { border-top-left-radius: 5px; }
         .nudge-demo .them.gb .bubble { border-bottom-left-radius: 5px; }
 
-        /* ---------- Bubble tails ---------- */
-        .nudge-demo .tail .bubble::before,
-        .nudge-demo .tail .bubble::after {
+        /* ---------- Bubble tails — genuine transparency, no screen-bg paint ---------- */
+        /* Single ::before per tail. CSS mask carves the concave notch so the page
+           gradient shows through instead of a solid screen-bg rectangle. ::after
+           is suppressed entirely — nothing paints the screen background color. */
+        .nudge-demo .tail .bubble::before {
           content: "";
           position: absolute;
           bottom: 0;
           height: 20px;
         }
+        /* Sent (right): left 12px always visible; right 8px visible only outside
+           the 10px circle at the tile's bottom-left — recreates the concave hook. */
         .nudge-demo .me.tail .bubble::before {
           right: -8px; width: 20px;
-          z-index: 0;
           background: var(--sent);
           border-bottom-left-radius: 15px;
+          -webkit-mask:
+            linear-gradient(white, white) 0 0 / 12px 100% no-repeat,
+            radial-gradient(circle at 0% 100%, transparent 10px, white 10px) 12px 0 / 8px 100% no-repeat;
+          mask:
+            linear-gradient(white, white) 0 0 / 12px 100% no-repeat,
+            radial-gradient(circle at 0% 100%, transparent 10px, white 10px) 12px 0 / 8px 100% no-repeat;
         }
-        .nudge-demo .me.tail .bubble::after {
-          right: -10px; width: 10px;
-          z-index: 1;
-          background: var(--screen-bg);
-          border-bottom-left-radius: 10px;
-        }
+        /* Received (left): mirror — right 12px always visible; left 8px visible
+           outside the 10px circle at the tile's bottom-right. */
         .nudge-demo .them.tail .bubble::before {
           left: -8px; width: 20px;
-          z-index: 0;
           background: var(--recv);
           border-bottom-right-radius: 15px;
+          -webkit-mask:
+            linear-gradient(white, white) right / 12px 100% no-repeat,
+            radial-gradient(circle at 100% 100%, transparent 10px, white 10px) 0 0 / 8px 100% no-repeat;
+          mask:
+            linear-gradient(white, white) right / 12px 100% no-repeat,
+            radial-gradient(circle at 100% 100%, transparent 10px, white 10px) 0 0 / 8px 100% no-repeat;
         }
-        .nudge-demo .them.tail .bubble::after {
-          left: -10px; width: 10px;
-          z-index: 1;
-          background: var(--screen-bg);
-          border-bottom-right-radius: 10px;
-        }
+        .nudge-demo .tail .bubble::after { content: none; }
 
         .nudge-demo .delivered {
           text-align: right;
