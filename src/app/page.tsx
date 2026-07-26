@@ -370,7 +370,7 @@ export default function LandingPage() {
                   what nudge does
                 </p>
               </RevealSection>
-              <RevealSection stagger={80} className="lp-exchanges lp-stagger">
+              <RevealSection stagger={140} className="lp-exchanges lp-stagger">
                 {EXCHANGES.map((ex, ei) => {
                   return (
                     <div key={ei} className="lp-exchange-card">
@@ -414,7 +414,7 @@ export default function LandingPage() {
                   how it works.
                 </h2>
               </RevealSection>
-              <RevealSection stagger={80} className="lp-stagger">
+              <RevealSection stagger={140} className="lp-stagger">
                 {[
                   "Text nudge what's due and when.",
                   'Nudge saves it and schedules the reminders.',

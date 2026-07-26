@@ -38,13 +38,13 @@ export function RevealSection({ children, stagger, className, style }: Props) {
         if (!entries[0].isIntersecting) return
         kids.forEach((ch, i) => {
           setTimeout(() => {
-            ch.style.transition = 'opacity 500ms ease-out, transform 500ms ease-out'
+            ch.style.transition = 'opacity 900ms ease-out, transform 900ms ease-out'
             ch.style.opacity = '1'
             ch.style.transform = 'translateY(0)'
           }, i * stagger)
         })
         observer.unobserve(el)
-      }, { threshold: 0.2 })
+      }, { threshold: 0.35 })
       observer.observe(el)
       return () => observer.disconnect()
     }
@@ -57,11 +57,11 @@ export function RevealSection({ children, stagger, className, style }: Props) {
     }
     const observer = new IntersectionObserver(entries => {
       if (!entries[0].isIntersecting) return
-      el.style.transition = 'opacity 500ms ease-out, transform 500ms ease-out'
+      el.style.transition = 'opacity 900ms ease-out, transform 900ms ease-out'
       el.style.opacity = '1'
       el.style.transform = 'translateY(0)'
       observer.unobserve(el)
-    }, { threshold: 0.2 })
+    }, { threshold: 0.35 })
     observer.observe(el)
     return () => observer.disconnect()
   }, [stagger])
