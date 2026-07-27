@@ -145,6 +145,33 @@ export async function cancelPendingReminders(assignmentId: string): Promise<void
   }
 }
 
+export async function scheduleSeatAlert(watchId: string, seatEventId: string): Promise<void> {
+  await reminderQueue.add(
+    'send-seat-alert',
+    { watchId, seatEventId },
+    {
+      jobId: `alert:${watchId}:${seatEventId}`,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 10_000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    }
+  )
+}
+
+export async function scheduleBroadcast(userId: string, phone: string, message: string): Promise<void> {
+  await reminderQueue.add(
+    'send-broadcast',
+    { userId, phone, message },
+    {
+      attempts: 2,
+      backoff: { type: 'fixed', delay: 5_000 },
+      removeOnComplete: true,
+      removeOnFail: false,
+    }
+  )
+}
+
 export async function enqueueReminder(reminder: {
   id: string
   assignmentId: string

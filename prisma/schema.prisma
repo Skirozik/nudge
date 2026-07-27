@@ -14,11 +14,13 @@ model User {
   persona         String           @default("coach")
   createdAt       DateTime         @default(now())
   optedOut        Boolean          @default(false)
+  source          String?
   assignments     Assignment[]
   conversation    Conversation?
   messages        Message[]
   sessions        Session[]
   oneOffReminders OneOffReminder[]
+  watches         Watch[]
 }
 
 model Assignment {
@@ -109,5 +111,51 @@ model Session {
   user      User     @relation(fields: [userId], references: [id])
   token     String   @unique @default(uuid())
   expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// ── SeatSnipe ──────────────────────────────────────────────────────────────
+
+enum WatchStatus {
+  ACTIVE
+  PAUSED
+  FULFILLED
+  CANCELLED
+  EXPIRED
+}
+
+model Watch {
+  id            String      @id @default(cuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id])
+  term          String
+  crn           String
+  courseCode    String
+  sectionLabel  String?
+  status        WatchStatus @default(ACTIVE)
+  lastSeats     Int         @default(0)
+  lastCheckedAt DateTime?
+  alertCount    Int         @default(0)
+  lastAlertAt   DateTime?
+  source        String?
+  createdAt     DateTime    @default(now())
+
+  @@unique([userId, term, crn])
+}
+
+model SeatEvent {
+  id         String   @id @default(cuid())
+  term       String
+  crn        String
+  seatsFrom  Int
+  seatsTo    Int
+  observedAt DateTime @default(now())
+}
+
+model MetricEvent {
+  id        String   @id @default(cuid())
+  kind      String
+  userId    String?
+  meta      Json?
   createdAt DateTime @default(now())
 }
