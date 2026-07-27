@@ -68,7 +68,7 @@ interface CrnGroup {
 async function pollAll(sendMessage: (phone: string, msg: string) => Promise<void>): Promise<void> {
   const watches = await prisma.watch.findMany({
     where: { status: 'ACTIVE' },
-    include: { user: { select: { phone: true } } },
+    select: { id: true, userId: true, term: true, crn: true, courseCode: true, lastSeats: true, lastAlertAt: true, user: { select: { phone: true } } },
   })
 
   // Dedup by (term, crn)
@@ -108,9 +108,11 @@ async function pollAll(sendMessage: (phone: string, msg: string) => Promise<void
 
 async function pollGroup(
   group: CrnGroup,
-  allWatches: Array<{ id: string; lastSeats: number; term: string; crn: string; lastAlertAt: Date | null; user: { phone: string } }>
+  allWatches: Array<{ id: string; lastSeats: number; term: string; crn: string; courseCode: string; lastAlertAt: Date | null; user: { phone: string } }>
 ): Promise<void> {
-  const section = await searchByCrn(group.term, group.crn)
+  const firstWatch = allWatches.find((w) => w.term === group.term && w.crn === group.crn)
+  if (!firstWatch) return
+  const section = await searchByCrn(group.term, group.crn, firstWatch.courseCode)
   if (!section) throw new Error(`[watcher] searchByCrn returned null for ${group.crn}`)
 
   const groupWatches = allWatches.filter((w) => w.term === group.term && w.crn === group.crn)

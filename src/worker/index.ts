@@ -310,7 +310,7 @@ async function recoverOnStartup(): Promise<void> {
       if (seen.has(key)) continue
       seen.add(key)
       try {
-        const section = await searchByCrn(w.term, w.crn)
+        const section = await searchByCrn(w.term, w.crn, w.courseCode)
         if (!section) continue
         const groupWatches = staleWatches.filter((sw) => sw.term === w.term && sw.crn === w.crn)
         for (const gw of groupWatches) {
