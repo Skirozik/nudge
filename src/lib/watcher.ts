@@ -88,7 +88,7 @@ async function pollAll(sendMessage: (phone: string, msg: string) => Promise<void
       while (inFlight < CONCURRENCY && qi < queue.length) {
         const group = queue[qi++]
         inFlight++
-        pollGroup(group, watches, sendMessage)
+        pollGroup(group, watches)
           .then(() => { consecutiveErrors = 0 })
           .catch(() => { consecutiveErrors++ })
           .finally(() => {
@@ -108,8 +108,7 @@ async function pollAll(sendMessage: (phone: string, msg: string) => Promise<void
 
 async function pollGroup(
   group: CrnGroup,
-  allWatches: Array<{ id: string; lastSeats: number; term: string; crn: string; lastAlertAt: Date | null; user: { phone: string } }>,
-  _sendMessage: (phone: string, msg: string) => Promise<void>
+  allWatches: Array<{ id: string; lastSeats: number; term: string; crn: string; lastAlertAt: Date | null; user: { phone: string } }>
 ): Promise<void> {
   const section = await searchByCrn(group.term, group.crn)
   if (!section) throw new Error(`[watcher] searchByCrn returned null for ${group.crn}`)
@@ -130,7 +129,7 @@ async function pollGroup(
 export function startWatcherLoop(
   sendMessage: (phone: string, msg: string) => Promise<void>
 ): void {
-  let running = true
+  const running = true
 
   async function loop(): Promise<void> {
     while (running) {
