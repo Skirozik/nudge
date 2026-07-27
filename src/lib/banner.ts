@@ -30,6 +30,28 @@ async function rateLimit(): Promise<void> {
   lastRequestAt = Date.now()
 }
 
+function extractCookies(res: Response): string {
+  // getSetCookie() returns each Set-Cookie header as a separate array entry (Node 18.14+)
+  const h = res.headers as Headers & { getSetCookie?(): string[] }
+  const all = h.getSetCookie?.() ?? []
+  if (all.length) return all.map((c) => c.split(';')[0]).join('; ')
+  // Fallback: single concatenated header — split on ', ' between cookie entries
+  const single = res.headers.get('set-cookie') ?? ''
+  return single
+    .split(/,\s*(?=[A-Za-z0-9_]+=)/)
+    .map((c) => c.split(';')[0].trim())
+    .join('; ')
+}
+
+function mergeCookies(a: string, b: string): string {
+  const map = new Map<string, string>()
+  for (const kv of [...a.split('; '), ...b.split('; ')]) {
+    const eq = kv.indexOf('=')
+    if (eq > 0) map.set(kv.slice(0, eq), kv)
+  }
+  return [...map.values()].join('; ')
+}
+
 async function selectTerm(term: string): Promise<void> {
   await rateLimit()
   const body = new URLSearchParams({
@@ -46,16 +68,21 @@ async function selectTerm(term: string): Promise<void> {
   })
   if (!res.ok) throw new Error(`[banner] term selection failed: ${res.status}`)
 
-  // Extract session cookies — getSetCookie() is available in Node 18.14+ (Next.js 15 requires 18.17+)
-  const h = res.headers as Headers & { getSetCookie?(): string[] }
-  const cookies = h.getSetCookie?.() ?? []
-  if (cookies.length) {
-    sessionCookies = cookies.map((c) => c.split(';')[0]).join('; ')
-  } else {
-    // Fallback: single set-cookie header (rare)
-    const single = res.headers.get('set-cookie')
-    if (single) sessionCookies = single.split(';')[0]
+  let cookies = extractCookies(res)
+  const json = await res.json() as { fwdURL?: string }
+
+  // Banner requires a GET to the classSearch page before searchResults will return data
+  if (json.fwdURL) {
+    await rateLimit()
+    const res2 = await fetch(`https://registration.gosolar.gsu.edu${json.fwdURL}`, {
+      method: 'GET',
+      headers: { 'User-Agent': SHARED_HEADERS['User-Agent'], cookie: cookies },
+    })
+    const more = extractCookies(res2)
+    if (more) cookies = mergeCookies(cookies, more)
   }
+
+  sessionCookies = cookies
   sessionTerm = term
 }
 
