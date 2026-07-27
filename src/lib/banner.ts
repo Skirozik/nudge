@@ -182,7 +182,7 @@ export function getCurrentTerm(): string {
   const now = new Date()
   const year = now.getFullYear()
   const month = now.getMonth() + 1
-  if (month <= 5) return `${year}01`
-  if (month <= 7) return `${year}05`
-  return `${year}08`
+  if (month >= 9) return `${year + 1}01`  // Sep–Dec → next Spring
+  if (month >= 6) return `${year}08`       // Jun–Aug → Fall
+  return `${year}01`                        // Jan–May → Spring
 }
