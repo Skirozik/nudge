@@ -4,6 +4,8 @@ import { sendMessage, sendTypingIndicator, downloadAttachment } from '@/lib/blue
 import { runAgent } from '@/lib/agent'
 import { parseSyllabusImage } from '@/lib/visionParser'
 import { normalizePhone } from '@/lib/phone'
+import { setSurgeMode } from '@/lib/redis'
+import { scheduleBroadcast } from '@/lib/queue'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -171,7 +173,11 @@ export async function POST(req: NextRequest) {
   }
 
   const isNewUser = !user
-  if (!user) user = await prisma.user.create({ data: { phone: normalizedPhone } })
+  if (!user) {
+    const lower = text.toLowerCase()
+    const source = ['nsbe', 'gdg', 'reddit', 'colorstack'].find((kw) => lower.includes(kw)) ?? null
+    user = await prisma.user.create({ data: { phone: normalizedPhone, source } })
+  }
 
   // Log inbound
   await prisma.message.create({
@@ -197,6 +203,45 @@ export async function POST(req: NextRequest) {
       console.error('[webhook] new user welcome error:', err)
     }
     return NextResponse.json({ ok: true })
+  }
+
+  // Admin command short-circuit — must be before runAgent()
+  if (process.env.ADMIN_PHONE && normalizedPhone === normalizePhone(process.env.ADMIN_PHONE)) {
+    const cmd = text.trim().toUpperCase()
+
+    if (cmd === 'STATS') {
+      const [userCount, watchCount, alertCount, seatCaughtCount] = await Promise.all([
+        prisma.user.count({ where: { optedOut: false } }),
+        prisma.watch.count({ where: { status: 'ACTIVE' } }),
+        prisma.metricEvent.count({ where: { kind: 'alert_sent', createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } }),
+        prisma.metricEvent.count({ where: { kind: 'seat_caught' } }),
+      ])
+      const stats = `Users: ${userCount}\nActive watches: ${watchCount}\nAlerts (24h): ${alertCount}\nSeats caught (all time): ${seatCaughtCount}`
+      await sendMessage(normalizedPhone, stats)
+      return NextResponse.json({ ok: true })
+    }
+
+    if (cmd === 'SURGE ON') {
+      await setSurgeMode(true)
+      await sendMessage(normalizedPhone, 'surge on — polling every ~75s')
+      return NextResponse.json({ ok: true })
+    }
+
+    if (cmd === 'SURGE OFF') {
+      await setSurgeMode(false)
+      await sendMessage(normalizedPhone, 'surge off — polling every 5min')
+      return NextResponse.json({ ok: true })
+    }
+
+    if (cmd.startsWith('BROADCAST ')) {
+      const broadcastMsg = text.slice('BROADCAST '.length).trim()
+      if (broadcastMsg) {
+        const recipients = await prisma.user.findMany({ where: { optedOut: false }, select: { id: true, phone: true } })
+        await Promise.all(recipients.map((u) => scheduleBroadcast(u.id, u.phone, broadcastMsg)))
+        await sendMessage(normalizedPhone, `queued ${recipients.length} message${recipients.length === 1 ? '' : 's'}`)
+        return NextResponse.json({ ok: true })
+      }
+    }
   }
 
   // Run agent and reply

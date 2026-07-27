@@ -2,6 +2,8 @@ import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from './prisma'
 import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleCheckIn } from './queue'
 import { resolveTimezone } from './timezone'
+import { createWatch, listWatches, cancelWatch } from './watches'
+import { searchByCrn, searchByCourse, getCurrentTerm } from './banner'
 
 const client = new Anthropic()
 
@@ -126,6 +128,53 @@ const TOOLS: Anthropic.Tool[] = [
       required: ['timezone'],
     },
   },
+  {
+    name: 'watch_course',
+    description:
+      'Set up a seat alert for a GSU course. If given a CRN (digits only), look it up and create the watch immediately. If given a course code like "CSCI 3350", fetch all sections and return them so the user can pick one (present as a numbered list, then call this tool again with the chosen CRN). Never guess a CRN.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'A CRN (digits only, e.g. "85312") or a course code (e.g. "CSCI 3350")',
+        },
+        term: {
+          type: 'string',
+          description: 'GSU term code in YYYYMM format (e.g. "202608"). Omit to use the current term.',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'list_watches',
+    description: "List the user's active seat watches.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'cancel_watch',
+    description:
+      'Cancel one or more seat watches. Use fulfilled=true when the user got into the class ("got it", "i\'m in", "i registered"). Use query "all" to cancel everything.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'CRN, course code (partial match), or "all"',
+        },
+        fulfilled: {
+          type: 'boolean',
+          description: 'True when the user successfully enrolled — records this as a win',
+        },
+      },
+      required: ['query'],
+    },
+  },
 ]
 
 async function executeTool(
@@ -242,6 +291,71 @@ async function executeTool(
       return { success: true, timezone: iana }
     }
 
+    case 'watch_course': {
+      const { query, term } = input as { query: string; term?: string }
+      const activeTerm = term ?? getCurrentTerm()
+      const trimmed = query.trim()
+
+      if (/^\d+$/.test(trimmed)) {
+        // Direct CRN
+        const section = await searchByCrn(activeTerm, trimmed)
+        if (!section) return { error: `Couldn't find CRN ${trimmed} for term ${activeTerm}. Double-check the CRN.` }
+        const userRow = await prisma.user.findUnique({ where: { id: userId }, select: { source: true } })
+        const result = await createWatch({
+          userId,
+          term: activeTerm,
+          crn: trimmed,
+          courseCode: section.courseCode,
+          sectionLabel: section.sectionLabel,
+          source: userRow?.source ?? null,
+        })
+        if (result.error) return { error: result.error }
+        return {
+          success: true,
+          crn: section.crn,
+          courseCode: section.courseCode,
+          sectionLabel: section.sectionLabel,
+          seatsAvailable: section.seatsAvailable,
+        }
+      } else {
+        // Course code → section picker
+        const parts = trimmed.split(/\s+/)
+        if (parts.length < 2) return { error: 'Use a CRN (digits) or a course code like "CSCI 3350".' }
+        const [subject, courseNumber] = parts
+        const sections = await searchByCourse(activeTerm, subject.toUpperCase(), courseNumber)
+        if (!sections.length) {
+          return { sections: [], message: `No open sections found for ${subject.toUpperCase()} ${courseNumber} this term.` }
+        }
+        return {
+          sections: sections.map((s, i) => ({
+            index: i + 1,
+            crn: s.crn,
+            label: s.sectionLabel,
+            seats: s.seatsAvailable,
+          })),
+        }
+      }
+    }
+
+    case 'list_watches': {
+      const watches = await listWatches(userId)
+      return {
+        watches: watches.map((w) => ({
+          crn: w.crn,
+          courseCode: w.courseCode,
+          sectionLabel: w.sectionLabel,
+          lastSeats: w.lastSeats,
+        })),
+      }
+    }
+
+    case 'cancel_watch': {
+      const { query, fulfilled } = input as { query: string; fulfilled?: boolean }
+      const status: 'FULFILLED' | 'CANCELLED' = fulfilled ? 'FULFILLED' : 'CANCELLED'
+      const count = await cancelWatch(userId, query, status)
+      return { success: true, cancelled: count }
+    }
+
     default:
       return { error: `Unknown tool: ${name}` }
   }
@@ -322,7 +436,14 @@ TONE AND FORMATTING:
 - Dashboard: ${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard — mention this if the user asks to manage things online or see their assignments on the web.
 ${opts?.lateReply ? '- LATE REPLY: The server was briefly offline and this message was missed. Open your reply with a short casual apology like "sorry for the slow reply —" or "my bad, missed that —" then respond normally. Keep the apology to one phrase, not a whole sentence.' : ''}
 - Current time: ${nowLocal} (${tz}, UTC${tzOffsetStr})
-- CRITICAL — tool time format: when calling any tool with due_at or fire_at, ALWAYS use offset-aware ISO 8601: YYYY-MM-DDTHH:MM:SS${tzOffsetStr}. NEVER use Z suffix (that means UTC and will schedule at the wrong local time). Example: if user says "11:59 PM tonight", use ${localDateStr}T23:59:00${tzOffsetStr}`
+- CRITICAL — tool time format: when calling any tool with due_at or fire_at, ALWAYS use offset-aware ISO 8601: YYYY-MM-DDTHH:MM:SS${tzOffsetStr}. NEVER use Z suffix (that means UTC and will schedule at the wrong local time). Example: if user says "11:59 PM tonight", use ${localDateStr}T23:59:00${tzOffsetStr}
+
+SEAT WATCH RULES:
+- If the user gives a CRN, call watch_course with that CRN directly. If they give a course code, call watch_course to get sections and reply with a numbered list: "1. Sec 020, MWF 9–9:50, Jones (2 seats)\n2. Sec 030, TR 11–12:15, Staff (0 seats)\nWhich CRN?" — then call watch_course again with the chosen CRN.
+- NEVER guess or invent a CRN. If you're not sure, ask.
+- Never promise to register the user. You only alert when a seat opens — registration is on them.
+- If the user says "got it", "i'm in", "i got in", "i registered", or similar after an alert, call cancel_watch with fulfilled=true. Celebrate briefly.
+- Max 5 active watches per user. If watch_course returns an error about the limit, tell them clearly.`
 
   // Get or create conversation history
   let convo = await prisma.conversation.findUnique({ where: { userId } })

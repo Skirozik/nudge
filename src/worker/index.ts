@@ -4,8 +4,11 @@ import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '../lib/prisma'
 import { sendMessage } from '../lib/bluebubbles'
 import { runAgent } from '../lib/agent'
-import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleCheckIn } from '../lib/queue'
+import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleCheckIn, scheduleSeatAlert } from '../lib/queue'
 import { normalizePhone } from '../lib/phone'
+import { startWatcherLoop } from '../lib/watcher'
+import { applyDiff, logMetric } from '../lib/watches'
+import { searchByCrn } from '../lib/banner'
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
 
@@ -294,6 +297,50 @@ async function recoverOnStartup(): Promise<void> {
     }
   }
 
+  // Watch recovery: poll ACTIVE watches whose lastCheckedAt is >15min stale (missed while down)
+  const staleThreshold = new Date(Date.now() - 15 * 60_000)
+  const staleWatches = await prisma.watch.findMany({
+    where: { status: 'ACTIVE', OR: [{ lastCheckedAt: null }, { lastCheckedAt: { lt: staleThreshold } }] },
+  })
+  if (staleWatches.length > 0) {
+    console.log(`[worker] Recovery: ${staleWatches.length} stale watch(es) to check`)
+    const seen = new Set<string>()
+    for (const w of staleWatches) {
+      const key = `${w.term}:${w.crn}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      try {
+        const section = await searchByCrn(w.term, w.crn)
+        if (!section) continue
+        const groupWatches = staleWatches.filter((sw) => sw.term === w.term && sw.crn === w.crn)
+        for (const gw of groupWatches) {
+          const { transition, seatEventId } = await applyDiff(gw, section.seatsAvailable)
+          if (transition === '0_to_N') {
+            await scheduleSeatAlert(gw.id, seatEventId)
+          }
+        }
+      } catch (err) {
+        console.error(`[worker] Recovery poll failed for CRN ${w.crn}:`, err)
+      }
+    }
+  }
+
+  // Heartbeat gap check — text admin if watcher was down >10min
+  const lastHeartbeat = await prisma.metricEvent.findFirst({
+    where: { kind: 'poller_heartbeat' },
+    orderBy: { createdAt: 'desc' },
+  })
+  const adminPhone = process.env.ADMIN_PHONE
+  if (lastHeartbeat && adminPhone) {
+    const gapMs = Date.now() - lastHeartbeat.createdAt.getTime()
+    if (gapMs > 10 * 60_000) {
+      const gapMin = Math.round(gapMs / 60_000)
+      try {
+        await sendMessage(adminPhone, `[SeatSnipe] Worker was down ~${gapMin}min — just restarted.`)
+      } catch {}
+    }
+  }
+
   console.log('[worker] Recovery complete')
   await recoverMissedMessages()
 }
@@ -444,6 +491,35 @@ const worker = new Worker(
       return
     }
 
+    if (job.name === 'send-seat-alert') {
+      const { watchId, seatEventId } = job.data as { watchId: string; seatEventId: string }
+      const watch = await prisma.watch.findUnique({
+        where: { id: watchId },
+        include: { user: true },
+      })
+      if (!watch || watch.status !== 'ACTIVE' || watch.user.optedOut) return
+
+      const seats = watch.lastSeats
+      const courseLabel = watch.sectionLabel ? `${watch.courseCode} (${watch.sectionLabel})` : watch.courseCode
+      const msg = `🚨 Seat opened in ${courseLabel} — ${seats} seat${seats === 1 ? '' : 's'} available! Register at gosolar.gsu.edu before it fills up.`
+
+      await sendMessage(watch.user.phone, msg)
+      await prisma.watch.update({
+        where: { id: watchId },
+        data: { alertCount: { increment: 1 }, lastAlertAt: new Date() },
+      })
+      await prisma.message.create({ data: { userId: watch.userId, direction: 'out', body: msg } })
+      await logMetric('alert_sent', watch.userId, { watchId, seatEventId })
+      console.log(`[worker] Seat alert sent for watch ${watchId} (${watch.courseCode})`)
+      return
+    }
+
+    if (job.name === 'send-broadcast') {
+      const { phone, message } = job.data as { phone: string; message: string }
+      await sendMessage(phone, message)
+      return
+    }
+
     if (job.name === 'send-monday-checkin') {
       const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)
       const users = await prisma.user.findMany({
@@ -489,6 +565,7 @@ worker.on('error', (err) => console.error('[worker] Worker error:', err))
 reminderQueue.on('error', (err) => console.error('[queue] Queue error:', err))
 
 recoverOnStartup().catch((e) => console.error('[worker] Startup recovery failed:', e))
+startWatcherLoop(sendMessage)
 
 reminderQueue.add('send-monday-checkin', {}, {
   repeat: { pattern: '0 13 * * 1' }, // Monday 9 AM ET (UTC-4)
