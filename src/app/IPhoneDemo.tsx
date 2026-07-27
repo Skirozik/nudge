@@ -486,6 +486,7 @@ export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDe
           width: 26px;
           height: 20px;
           pointer-events: none;
+          z-index: -1;
         }
         .nudge-demo .me.tail .bubble::before {
           right: -8px;
