@@ -322,7 +322,7 @@ async function executeTool(
         const parts = trimmed.split(/\s+/)
         if (parts.length < 2) return { error: 'Use a CRN (digits) or a course code like "CSCI 3350".' }
         const [subject, courseNumber] = parts
-        const sections = await searchByCourse(activeTerm, subject.toUpperCase(), courseNumber)
+        const sections = await searchByCourse(activeTerm, subject.toUpperCase(), courseNumber.toUpperCase())
         if (!sections.length) {
           return { sections: [], message: `No open sections found for ${subject.toUpperCase()} ${courseNumber} this term.` }
         }
