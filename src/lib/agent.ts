@@ -293,18 +293,34 @@ async function executeTool(
 
     case 'watch_course': {
       const { query, term } = input as { query: string; term?: string }
-      const activeTerm = term ?? getCurrentTerm()
-      const trimmed = query.trim()
+      const activeTerm = term ?? await getCurrentTerm()
+      const parts = query.trim().split(/\s+/)
 
-      if (/^\d+$/.test(trimmed)) {
-        // Direct CRN
-        const section = await searchByCrn(activeTerm, trimmed)
-        if (!section) return { error: `Couldn't find CRN ${trimmed} for term ${activeTerm}. Double-check the CRN.` }
+      // Require at least subject + courseNumber ("CSC 1301L")
+      // Optional third token is the CRN ("CSC 1301L 90474") — creates watch directly
+      if (parts.length < 2) {
+        return { error: 'Provide a course code like "CSC 1301L" or "CSC 1301L 90474" to watch a specific section.' }
+      }
+
+      const [rawSubject, courseNumber, ...rest] = parts
+      const subject = rawSubject.toUpperCase() === 'CSCI' ? 'CSC' : rawSubject.toUpperCase()
+      const specificCrn = rest.find((p) => /^\d+$/.test(p)) ?? null
+
+      const sections = await searchByCourse(activeTerm, subject, courseNumber.toUpperCase())
+      if (!sections.length) {
+        return { sections: [], message: `No sections found for ${subject} ${courseNumber.toUpperCase()} this term.` }
+      }
+
+      if (specificCrn) {
+        const section = sections.find((s) => s.crn === specificCrn)
+        if (!section) {
+          return { error: `CRN ${specificCrn} not found in ${subject} ${courseNumber.toUpperCase()} sections.` }
+        }
         const userRow = await prisma.user.findUnique({ where: { id: userId }, select: { source: true } })
         const result = await createWatch({
           userId,
           term: activeTerm,
-          crn: trimmed,
+          crn: specificCrn,
           courseCode: section.courseCode,
           sectionLabel: section.sectionLabel,
           source: userRow?.source ?? null,
@@ -317,23 +333,16 @@ async function executeTool(
           sectionLabel: section.sectionLabel,
           seatsAvailable: section.seatsAvailable,
         }
-      } else {
-        // Course code → section picker
-        const parts = trimmed.split(/\s+/)
-        if (parts.length < 2) return { error: 'Use a CRN (digits) or a course code like "CSCI 3350".' }
-        const [subject, courseNumber] = parts
-        const sections = await searchByCourse(activeTerm, subject.toUpperCase(), courseNumber.toUpperCase())
-        if (!sections.length) {
-          return { sections: [], message: `No open sections found for ${subject.toUpperCase()} ${courseNumber} this term.` }
-        }
-        return {
-          sections: sections.map((s, i) => ({
-            index: i + 1,
-            crn: s.crn,
-            label: s.sectionLabel,
-            seats: s.seatsAvailable,
-          })),
-        }
+      }
+
+      // No CRN specified — return section list for user to pick
+      return {
+        sections: sections.map((s, i) => ({
+          index: i + 1,
+          crn: s.crn,
+          label: s.sectionLabel,
+          seats: s.seatsAvailable,
+        })),
       }
     }
 
@@ -439,8 +448,10 @@ ${opts?.lateReply ? '- LATE REPLY: The server was briefly offline and this messa
 - CRITICAL — tool time format: when calling any tool with due_at or fire_at, ALWAYS use offset-aware ISO 8601: YYYY-MM-DDTHH:MM:SS${tzOffsetStr}. NEVER use Z suffix (that means UTC and will schedule at the wrong local time). Example: if user says "11:59 PM tonight", use ${localDateStr}T23:59:00${tzOffsetStr}
 
 SEAT WATCH RULES:
-- If the user gives a CRN, call watch_course with that CRN directly. If they give a course code, call watch_course to get sections and reply with a numbered list: "1. Sec 020, MWF 9–9:50, Jones (2 seats)\n2. Sec 030, TR 11–12:15, Staff (0 seats)\nWhich CRN?" — then call watch_course again with the chosen CRN.
-- NEVER guess or invent a CRN. If you're not sure, ask.
+- To show sections: call watch_course with "SUBJECT COURSENUMBER" e.g. "CSC 1301L". Reply with a numbered list showing CRN, seats, and schedule. Example: "1. CRN 90474, Sec 010 MWF 9–9:50, Jones (5 seats open)\n2. CRN 90476, Sec 002 MWF 9–9:50, Smith (FULL)"
+- To create a watch after user picks: call watch_course with "SUBJECT COURSENUMBER CRN" e.g. "CSC 1301L 90474". Always include the full course code — the API requires it.
+- CSCI and CSC are the same subject at GSU — normalize both to CSC before calling watch_course.
+- NEVER guess or invent a CRN. Only use CRNs returned by watch_course sections list.
 - Never promise to register the user. You only alert when a seat opens — registration is on them.
 - If the user says "got it", "i'm in", "i got in", "i registered", or similar after an alert, call cancel_watch with fulfilled=true. Celebrate briefly.
 - Max 5 active watches per user. If watch_course returns an error about the limit, tell them clearly.`

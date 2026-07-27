@@ -1,26 +1,34 @@
 /**
  * GSU Banner/Ellucian API client for SeatSnipe.
  *
- * Key design: Banner requires a term-selection POST before any search results
- * endpoint will respond with data. That POST sets session cookies. This module
- * maintains a module-level cookie string so the worker (persistent process) only
- * re-authenticates when the term changes or the session expires.
- *
- * Seat counts come from `searchResults` (not `getSectionDetail` or
- * `getFacultyMeetingTimes` — those don't carry seatsAvailable).
+ * Key findings from live testing against registration.gosolar.gsu.edu:
+ * - Term list must be fetched from getTerms API (not computed from month).
+ * - Session requires: GET /ssb/registration → POST selectTerm → GET classSearch.
+ * - searchResults must be called via GET (query params), not POST — POST silently
+ *   ignores filter params on GSU's Banner instance.
+ * - txt_courseReferenceNumber filter is broken on GSU's instance — it ignores the
+ *   CRN and returns all sections. Always search by subject+courseNumber instead,
+ *   then find the target CRN in the result set.
+ * - resetDataForm must be called before each search in a reused session.
  */
 
 const BASE = 'https://registration.gosolar.gsu.edu/StudentRegistrationSsb'
+const CLASS_SEARCH_URL = `${BASE}/ssb/classSearch/classSearch`
 
-const SHARED_HEADERS: Record<string, string> = {
-  'User-Agent': 'SeatSnipe/1.0 (nudgebuddy.net) seat-availability-monitor zacharyinyan@gmail.com',
-  Accept: 'application/json, text/javascript, */*; q=0.01',
-  'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-  'X-Requested-With': 'XMLHttpRequest',
+const UA = 'SeatSnipe/1.0 (nudgebuddy.net) seat-availability-monitor zacharyinyan@gmail.com'
+
+// GSU uses "CSC" but students often type "CSCI"
+const SUBJECT_MAP: Record<string, string> = { CSCI: 'CSC' }
+
+function normalizeSubject(s: string): string {
+  const up = s.toUpperCase()
+  return SUBJECT_MAP[up] ?? up
 }
 
+// ── Module-level session state (persistent worker process) ────────────────────
 let sessionCookies = ''
 let sessionTerm = ''
+let cachedActiveTerm: string | null = null
 let lastRequestAt = 0
 const RATE_MS = 500
 
@@ -31,15 +39,14 @@ async function rateLimit(): Promise<void> {
 }
 
 function extractCookies(res: Response): string {
-  // getSetCookie() returns each Set-Cookie header as a separate array entry (Node 18.14+)
   const h = res.headers as Headers & { getSetCookie?(): string[] }
   const all = h.getSetCookie?.() ?? []
   if (all.length) return all.map((c) => c.split(';')[0]).join('; ')
-  // Fallback: single concatenated header — split on ', ' between cookie entries
   const single = res.headers.get('set-cookie') ?? ''
   return single
     .split(/,\s*(?=[A-Za-z0-9_]+=)/)
     .map((c) => c.split(';')[0].trim())
+    .filter(Boolean)
     .join('; ')
 }
 
@@ -52,61 +59,112 @@ function mergeCookies(a: string, b: string): string {
   return [...map.values()].join('; ')
 }
 
-async function selectTerm(term: string): Promise<void> {
+// ── Term discovery ────────────────────────────────────────────────────────────
+
+/** Fetch active term from Banner's term list — first entry without "(View Only)". */
+export async function getActiveTerm(): Promise<string> {
+  if (cachedActiveTerm) return cachedActiveTerm
   await rateLimit()
-  const body = new URLSearchParams({
-    term,
-    studyPath: '',
-    studyPathText: '',
-    startDatepicker: '',
-    endDatepicker: '',
+  const res = await fetch(`${BASE}/ssb/classSearch/getTerms?searchTerm=&offset=1&max=20`, {
+    headers: { 'User-Agent': UA },
   })
-  const res = await fetch(`${BASE}/ssb/term/search?mode=search`, {
+  const terms = (await res.json()) as Array<{ code: string; description: string }>
+  const active = terms.find((t) => !t.description.includes('View Only'))
+  if (!active) throw new Error('[banner] no active term found in getTerms')
+  cachedActiveTerm = active.code
+  console.log(`[banner] active term: ${active.code} (${active.description})`)
+  return active.code
+}
+
+// ── Session management ────────────────────────────────────────────────────────
+
+async function selectTerm(term: string): Promise<void> {
+  // 1. Initial GET to establish base JSESSIONID + BIGip cookies
+  await rateLimit()
+  const r0 = await fetch(`${BASE}/ssb/registration`, { headers: { 'User-Agent': UA } })
+  let cookies = extractCookies(r0)
+
+  // 2. POST term selection
+  await rateLimit()
+  const r1 = await fetch(`${BASE}/ssb/term/search?mode=search`, {
     method: 'POST',
-    headers: SHARED_HEADERS,
-    body: body.toString(),
+    headers: {
+      'User-Agent': UA,
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'X-Requested-With': 'XMLHttpRequest',
+      cookie: cookies,
+    },
+    body: new URLSearchParams({
+      term,
+      studyPath: '',
+      studyPathText: '',
+      startDatepicker: '',
+      endDatepicker: '',
+    }).toString(),
   })
-  if (!res.ok) throw new Error(`[banner] term selection failed: ${res.status}`)
+  if (!r1.ok) throw new Error(`[banner] term selection failed: ${r1.status}`)
+  const more1 = extractCookies(r1)
+  if (more1) cookies = mergeCookies(cookies, more1)
+  const j1 = (await r1.json()) as { fwdURL?: string }
 
-  let cookies = extractCookies(res)
-  const json = await res.json() as { fwdURL?: string }
-
-  // Banner requires a GET to the classSearch page before searchResults will return data
-  if (json.fwdURL) {
-    await rateLimit()
-    const res2 = await fetch(`https://registration.gosolar.gsu.edu${json.fwdURL}`, {
-      method: 'GET',
-      headers: { 'User-Agent': SHARED_HEADERS['User-Agent'], cookie: cookies },
-    })
-    const more = extractCookies(res2)
-    if (more) cookies = mergeCookies(cookies, more)
-  }
+  // 3. GET classSearch page — required before searchResults returns data
+  const fwd = j1.fwdURL ?? '/StudentRegistrationSsb/ssb/classSearch/classSearch'
+  await rateLimit()
+  const r2 = await fetch(`https://registration.gosolar.gsu.edu${fwd}`, {
+    headers: { 'User-Agent': UA, cookie: cookies },
+  })
+  const more2 = extractCookies(r2)
+  if (more2) cookies = mergeCookies(cookies, more2)
 
   sessionCookies = cookies
   sessionTerm = term
+  console.log(`[banner] session established for term ${term}`)
 }
 
-async function doSearch(params: Record<string, string>, retried = false): Promise<RawSection[]> {
+async function resetDataForm(): Promise<void> {
+  await fetch(`${BASE}/ssb/classSearch/resetDataForm`, {
+    method: 'POST',
+    headers: {
+      'User-Agent': UA,
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'X-Requested-With': 'XMLHttpRequest',
+      cookie: sessionCookies,
+    },
+    body: '',
+  })
+}
+
+// ── Core search (GET — POST silently ignores filter params on GSU's instance) ─
+
+async function doSearch(
+  params: Record<string, string>,
+  retried = false
+): Promise<RawSection[]> {
   const term = params.txt_term
   if (!sessionCookies || sessionTerm !== term) await selectTerm(term)
 
+  await resetDataForm()
   await rateLimit()
-  const body = new URLSearchParams({
+
+  const qs = new URLSearchParams({
     pageOffset: '0',
-    pageMaxSize: '50',
+    pageMaxSize: '500',
     sortColumn: 'subjectDescription',
     sortDirection: 'asc',
     ...params,
   })
 
-  const res = await fetch(`${BASE}/ssb/searchResults/searchResults`, {
-    method: 'POST',
-    headers: { ...SHARED_HEADERS, cookie: sessionCookies },
-    body: body.toString(),
+  const res = await fetch(`${BASE}/ssb/searchResults/searchResults?${qs}`, {
+    headers: {
+      'User-Agent': UA,
+      'X-Requested-With': 'XMLHttpRequest',
+      Accept: 'application/json',
+      cookie: sessionCookies,
+      Referer: CLASS_SEARCH_URL,
+    },
   })
 
   if ((res.status === 401 || res.status === 403) && !retried) {
-    // Session expired — re-auth once
     sessionCookies = ''
     await selectTerm(term)
     return doSearch(params, true)
@@ -117,6 +175,8 @@ async function doSearch(params: Record<string, string>, retried = false): Promis
   const json = (await res.json()) as { data?: RawSection[] }
   return json.data ?? []
 }
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface RawSection {
   courseReferenceNumber?: string
@@ -152,7 +212,6 @@ function parse(raw: RawSection): SectionInfo {
   const number = raw.courseNumber ?? ''
   const seq = raw.sequenceNumber ?? ''
   const crn = raw.courseReferenceNumber ?? ''
-
   const instructor = raw.faculty?.[0]?.displayName ?? 'Staff'
   const mt = raw.meetingsFaculty?.[0]?.meetingTime
   let days = ''
@@ -167,7 +226,6 @@ function parse(raw: RawSection): SectionInfo {
     days = d.join('')
     if (mt.beginTime && mt.endTime) time = `${mt.beginTime}–${mt.endTime}`
   }
-
   return {
     crn,
     courseCode: `${subject} ${number}`,
@@ -177,26 +235,45 @@ function parse(raw: RawSection): SectionInfo {
   }
 }
 
-/** Poll a single CRN. Returns null on API error (caller handles circuit breaker). */
-export async function searchByCrn(term: string, crn: string): Promise<SectionInfo | null> {
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Poll a single CRN by searching its course and finding the matching entry.
+ * courseCode is required because GSU's Banner ignores the txt_courseReferenceNumber
+ * filter — we must search by subject+courseNumber and filter client-side.
+ */
+export async function searchByCrn(
+  term: string,
+  crn: string,
+  courseCode: string
+): Promise<SectionInfo | null> {
   try {
-    const rows = await doSearch({ txt_term: term, txt_courseReferenceNumber: crn, pageMaxSize: '1' })
-    if (!rows.length) return null
-    return parse(rows[0])
+    const parts = courseCode.trim().split(/\s+/)
+    if (parts.length < 2) throw new Error(`[banner] invalid courseCode: ${courseCode}`)
+    const subject = normalizeSubject(parts[0])
+    const courseNumber = parts[1].toUpperCase()
+    const rows = await doSearch({ txt_term: term, txt_subject: subject, txt_courseNumber: courseNumber })
+    const match = rows.find((r) => r.courseReferenceNumber === crn)
+    return match ? parse(match) : null
   } catch (err) {
     console.error(`[banner] searchByCrn(${crn}):`, err)
     return null
   }
 }
 
-/** Fetch all sections for a specific course code (subject + number). */
+/** Fetch all sections for a course code. Subject is normalized (CSCI → CSC). */
 export async function searchByCourse(
   term: string,
   subject: string,
   courseNumber: string
 ): Promise<SectionInfo[]> {
   try {
-    const rows = await doSearch({ txt_term: term, txt_subject: subject, txt_courseNumber: courseNumber })
+    const normalizedSubject = normalizeSubject(subject)
+    const rows = await doSearch({
+      txt_term: term,
+      txt_subject: normalizedSubject,
+      txt_courseNumber: courseNumber.toUpperCase(),
+    })
     return rows.map(parse)
   } catch (err) {
     console.error(`[banner] searchByCourse(${subject} ${courseNumber}):`, err)
@@ -204,12 +281,7 @@ export async function searchByCourse(
   }
 }
 
-/** Current GSU term code (YYYYMM). */
-export function getCurrentTerm(): string {
-  const now = new Date()
-  const year = now.getFullYear()
-  const month = now.getMonth() + 1
-  if (month >= 9) return `${year + 1}01`  // Sep–Dec → next Spring
-  if (month >= 6) return `${year}08`       // Jun–Aug → Fall
-  return `${year}01`                        // Jan–May → Spring
+/** Active term from Banner API (cached). Replaces computed getCurrentTerm(). */
+export async function getCurrentTerm(): Promise<string> {
+  return getActiveTerm()
 }
