@@ -478,44 +478,24 @@ export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDe
         .nudge-demo .them.gt .bubble { border-top-left-radius: 5px; }
         .nudge-demo .them.gb .bubble { border-bottom-left-radius: 5px; }
 
-        /* ---------- Bubble tails — genuine transparency, no screen-bg paint ---------- */
-        /* ::before  = tail body; border-radius on the inner corner carves the concave
-                       notch shape — the clipped area is transparent, page shows through.
-           ::after   = transparent box; box-shadow in bubble color fills the join seam
-                       between the tail and the bubble's own border-radius. */
-        .nudge-demo .me.tail .bubble::before {
+        /* ---------- Bubble tails ---------- */
+        .nudge-demo .tail .bubble::before {
           content: "";
           position: absolute;
-          bottom: 0; right: -8px;
-          width: 20px; height: 20px;
-          background: var(--sent);
-          border-bottom-left-radius: 15px;
+          bottom: 0;
+          width: 26px;
+          height: 20px;
+          pointer-events: none;
         }
-        .nudge-demo .me.tail .bubble::after {
-          content: "";
-          position: absolute;
-          bottom: 0; right: 0;
-          width: 8px; height: 10px;
-          background: transparent;
-          border-bottom-right-radius: 8px;
-          box-shadow: 4px 4px 0 4px var(--sent);
+        .nudge-demo .me.tail .bubble::before {
+          right: -8px;
+          background: var(--sent);
+          clip-path: path("M 18 10 A 10 10 0 0 0 26 20 L 18 20 Z M 0 0 L 18 0 L 18 20 L 0 20 Z");
         }
         .nudge-demo .them.tail .bubble::before {
-          content: "";
-          position: absolute;
-          bottom: 0; left: -8px;
-          width: 20px; height: 20px;
+          left: -8px;
           background: var(--recv);
-          border-bottom-right-radius: 15px;
-        }
-        .nudge-demo .them.tail .bubble::after {
-          content: "";
-          position: absolute;
-          bottom: 0; left: 0;
-          width: 8px; height: 10px;
-          background: transparent;
-          border-bottom-left-radius: 8px;
-          box-shadow: -4px 4px 0 4px var(--recv);
+          clip-path: path("M 8 10 A 10 10 0 0 1 0 20 L 8 20 Z M 26 0 L 8 0 L 8 20 L 26 20 Z");
         }
 
         .nudge-demo .delivered {
