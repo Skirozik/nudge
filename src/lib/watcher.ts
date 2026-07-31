@@ -147,7 +147,7 @@ export function startWatcherLoop(
       // Circuit breaker
       if (consecutiveErrors >= CIRCUIT_THRESHOLD) {
         console.error(`[watcher] circuit open after ${consecutiveErrors} errors — pausing ${CIRCUIT_PAUSE_MS / 60000}min`)
-        await logMetric('watcher_circuit_open', null, { consecutiveErrors })
+        try { await logMetric('watcher_circuit_open', null, { consecutiveErrors }) } catch {}
         consecutiveErrors = 0
         await sleep(CIRCUIT_PAUSE_MS)
         continue
@@ -160,14 +160,25 @@ export function startWatcherLoop(
         consecutiveErrors++
       }
 
-      await logMetric('poller_heartbeat', null, { consecutiveErrors })
+      try { await logMetric('poller_heartbeat', null, { consecutiveErrors }) } catch {}
 
-      const interval = await getInterval()
+      const interval = await getInterval().catch(() => jitter(NORMAL_MS))
       await sleep(interval)
     }
   }
 
-  loop().catch((err) => console.error('[watcher] fatal loop error:', err))
+  async function supervise(): Promise<void> {
+    while (true) {
+      try {
+        await loop()
+      } catch (err) {
+        console.error('[watcher] fatal loop error — restarting in 60s:', err)
+        await sleep(60_000)
+      }
+    }
+  }
+
+  supervise()
 }
 
 function sleep(ms: number): Promise<void> {
