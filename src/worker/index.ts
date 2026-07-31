@@ -355,14 +355,30 @@ const worker = new Worker(
         persistent?: boolean
         oneOffReminderId?: string
       }
-      // If the reminder was dismissed from the dashboard it will have been deleted
+
       if (oneOffReminderId) {
-        const exists = await prisma.oneOffReminder.findUnique({ where: { id: oneOffReminderId } })
-        if (!exists) {
+        const record = await prisma.oneOffReminder.findUnique({ where: { id: oneOffReminderId } })
+        if (!record) {
           console.log(`[worker] One-off reminder ${oneOffReminderId} was dismissed — skipping`)
           return
         }
+        // Already sent (idempotency guard for retries)
+        if (record.sent) {
+          console.log(`[worker] One-off reminder ${oneOffReminderId} already sent — skipping`)
+          return
+        }
+        // Staleness guard: if the job fires >30min after scheduled time (worker was down),
+        // skip silently — stale reminders for past times confuse more than they help
+        const overdueMs = Date.now() - record.fireAt.getTime()
+        if (overdueMs > 30 * 60 * 1000) {
+          console.log(`[worker] One-off reminder ${oneOffReminderId} is ${Math.round(overdueMs / 60000)}min overdue — skipping stale reminder`)
+          await prisma.oneOffReminder.update({ where: { id: oneOffReminderId }, data: { sent: true } })
+          return
+        }
+        // Mark sent before sending to prevent double-send if sendMessage throws then retries
+        await prisma.oneOffReminder.update({ where: { id: oneOffReminderId }, data: { sent: true } })
       }
+
       console.log(`[worker] Sending one-off reminder to user ${userId}`)
       const user = await prisma.user.findUnique({ where: { id: userId } })
       if (user && !user.optedOut) {
@@ -373,12 +389,6 @@ const worker = new Worker(
         if (persistent) {
           await scheduleFollowUp({ userId, oneOffMessage: message, followUpNumber: 0, sentAfter })
         }
-      }
-      if (oneOffReminderId) {
-        await prisma.oneOffReminder.update({
-          where: { id: oneOffReminderId },
-          data: { sent: true },
-        })
       }
       return
     }
