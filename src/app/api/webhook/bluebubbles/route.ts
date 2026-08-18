@@ -6,6 +6,7 @@ import { parseSyllabusImage } from '@/lib/visionParser'
 import { normalizePhone } from '@/lib/phone'
 import { setSurgeMode } from '@/lib/redis'
 import { scheduleBroadcast } from '@/lib/queue'
+import { handleServerFailure, clearNotified } from '@/lib/outage'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -125,11 +126,7 @@ export async function POST(req: NextRequest) {
       }
     } catch (err) {
       console.error('[webhook] image handling error:', err)
-      try {
-        await sendMessage(phone, "something went wrong reading that photo — try again?")
-      } catch (sendErr) {
-        console.error('[webhook] sendMessage failed after image error:', sendErr instanceof Error ? sendErr.message : String(sendErr))
-      }
+      await handleServerFailure(user.id, phone, err)
     }
 
     return NextResponse.json({ ok: true })
@@ -254,14 +251,12 @@ export async function POST(req: NextRequest) {
         data: { userId: user.id, direction: 'out', body: reply },
       })
     }
+    // Agent worked for this user — don't send them a redundant "i'm back" later
+    void clearNotified(user.id)
   } catch (err) {
     const errMsg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err)
     console.error('[webhook] agent error:', errMsg)
-    try {
-      await sendMessage(phone, "Something glitched on my end — try again?")
-    } catch (sendErr) {
-      console.error('[webhook] sendMessage failed after agent error:', sendErr instanceof Error ? sendErr.message : String(sendErr))
-    }
+    await handleServerFailure(user.id, normalizedPhone, err)
   }
 
   return NextResponse.json({ ok: true })

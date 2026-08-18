@@ -7,6 +7,7 @@ import { runAgent } from '../lib/agent'
 import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleSeatAlert } from '../lib/queue'
 import { normalizePhone } from '../lib/phone'
 import { startWatcherLoop } from '../lib/watcher'
+import { startOutageMonitor, handleServerFailure, markOutage } from '../lib/outage'
 import { applyDiff, logMetric } from '../lib/watches'
 import { searchByCrn } from '../lib/banner'
 
@@ -56,17 +57,23 @@ async function generateReminderMessage(
 
   const prompt = `Write a short reminder text message. Assignment: "${title}"${course ? ` for ${course}` : ''}. Due ${timeStr}.`
 
-  const res = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 150,
-    system: PERSONA_PROMPTS[persona] ?? PERSONA_PROMPTS.coach,
-    messages: [{ role: 'user', content: prompt }],
-  })
+  try {
+    const res = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 150,
+      system: PERSONA_PROMPTS[persona] ?? PERSONA_PROMPTS.coach,
+      messages: [{ role: 'user', content: prompt }],
+    })
 
-  const textBlock = res.content.find((b) => b.type === 'text')
-  return textBlock?.type === 'text'
-    ? textBlock.text
-    : `Reminder: "${title}" is due ${timeStr}!`
+    const textBlock = res.content.find((b) => b.type === 'text')
+    return textBlock?.type === 'text'
+      ? textBlock.text
+      : `Reminder: "${title}" is due ${timeStr}!`
+  } catch (err) {
+    // API down / credits out — flag the outage but still deliver a plain reminder
+    void markOutage(err instanceof Error ? err.message : String(err)).catch(() => {})
+    return `Reminder: "${title}"${course ? ` for ${course}` : ''} is due ${timeStr}!`
+  }
 }
 
 async function generateNagMessage(
@@ -76,21 +83,26 @@ async function generateNagMessage(
 ): Promise<string> {
   const escalation = NAG_ESCALATION[followUpNumber] ?? NAG_ESCALATION[NAG_ESCALATION.length - 1]
 
-  const res = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 120,
-    system:
-      "You are Nudge, texting like a naggy ex who genuinely cares but will NOT be ignored. Real iMessage energy. Lowercase fine, no em dashes, no markdown, max 2 sentences.",
-    messages: [
-      {
-        role: 'user',
-        content: `Write follow-up #${followUpNumber + 1} for assignment "${title}"${course ? ` (${course})` : ''}. Escalation: ${escalation}`,
-      },
-    ],
-  })
+  try {
+    const res = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 120,
+      system:
+        "You are Nudge, texting like a naggy ex who genuinely cares but will NOT be ignored. Real iMessage energy. Lowercase fine, no em dashes, no markdown, max 2 sentences.",
+      messages: [
+        {
+          role: 'user',
+          content: `Write follow-up #${followUpNumber + 1} for assignment "${title}"${course ? ` (${course})` : ''}. Escalation: ${escalation}`,
+        },
+      ],
+    })
 
-  const textBlock = res.content.find((b) => b.type === 'text')
-  return textBlock?.type === 'text' ? textBlock.text : `HEY. ${title}. Still waiting. 👀`
+    const textBlock = res.content.find((b) => b.type === 'text')
+    return textBlock?.type === 'text' ? textBlock.text : `HEY. ${title}. Still waiting. 👀`
+  } catch (err) {
+    void markOutage(err instanceof Error ? err.message : String(err)).catch(() => {})
+    return `HEY. ${title}. Still waiting. 👀`
+  }
 }
 
 async function processReminder(assignmentId: string | undefined): Promise<void> {
@@ -250,6 +262,7 @@ async function recoverMissedMessages(): Promise<void> {
       }
     } catch (err) {
       console.error(`[worker] Failed to replay missed message from ${normalized}:`, err)
+      await handleServerFailure(user.id, normalized, err)
     }
 
     await new Promise((r) => setTimeout(r, 500))
@@ -576,6 +589,7 @@ reminderQueue.on('error', (err) => console.error('[queue] Queue error:', err))
 
 recoverOnStartup().catch((e) => console.error('[worker] Startup recovery failed:', e))
 startWatcherLoop(sendMessage)
+startOutageMonitor()
 
 reminderQueue.add('send-monday-checkin', {}, {
   repeat: { pattern: '0 13 * * 1' }, // Monday 9 AM ET (UTC-4)
