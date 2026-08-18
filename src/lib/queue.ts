@@ -40,9 +40,19 @@ export async function scheduleReminders(assignment: {
 
     const delay = Math.max(0, sendAt.getTime() - Date.now())
 
+    // Create the row first so the job can target this exact reminder —
+    // findFirst-by-assignment picks the wrong row when there are multiple offsets
+    const reminderRow = await prisma.reminder.create({
+      data: {
+        assignmentId: assignment.id,
+        sendAt,
+        bullmqJobId: null,
+      },
+    })
+
     const job = await reminderQueue.add(
       'send-reminder',
-      { assignmentId: assignment.id, offsetHours },
+      { assignmentId: assignment.id, reminderId: reminderRow.id, offsetHours },
       {
         delay,
         attempts: 3,
@@ -52,12 +62,9 @@ export async function scheduleReminders(assignment: {
       }
     )
 
-    await prisma.reminder.create({
-      data: {
-        assignmentId: assignment.id,
-        sendAt,
-        bullmqJobId: job.id ?? null,
-      },
+    await prisma.reminder.update({
+      where: { id: reminderRow.id },
+      data: { bullmqJobId: job.id ?? null },
     })
   }
 }
@@ -181,7 +188,7 @@ export async function enqueueReminder(reminder: {
 
   const job = await reminderQueue.add(
     'send-reminder',
-    { assignmentId: reminder.assignmentId },
+    { assignmentId: reminder.assignmentId, reminderId: reminder.id },
     {
       delay,
       attempts: 3,

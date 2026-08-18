@@ -105,18 +105,23 @@ async function generateNagMessage(
   }
 }
 
-async function processReminder(assignmentId: string | undefined): Promise<void> {
-  if (!assignmentId) {
-    console.error('[worker] processReminder called with no assignmentId — skipping')
-    return
-  }
+async function processReminder(reminderId?: string, assignmentId?: string): Promise<void> {
+  // Prefer the exact reminder row (new jobs carry reminderId).
+  // Fallback for legacy jobs still in Redis: oldest unsent reminder for the assignment.
+  const reminder = reminderId
+    ? await prisma.reminder.findUnique({
+        where: { id: reminderId },
+        include: { assignment: { include: { user: true } } },
+      })
+    : assignmentId
+      ? await prisma.reminder.findFirst({
+          where: { assignmentId, sent: false },
+          orderBy: { sendAt: 'asc' },
+          include: { assignment: { include: { user: true } } },
+        })
+      : null
 
-  const reminder = await prisma.reminder.findFirst({
-    where: { assignmentId, sent: false },
-    include: { assignment: { include: { user: true } } },
-  })
-
-  if (!reminder) return
+  if (!reminder || reminder.sent) return
 
   const { assignment } = reminder
   const { user } = assignment
@@ -133,13 +138,24 @@ async function processReminder(assignmentId: string | undefined): Promise<void> 
     user.persona
   )
 
+  // Atomically claim the row BEFORE sending — a BullMQ retry after a failed
+  // DB write would otherwise double-text the user
   const sentAt = new Date()
-  await sendMessage(user.phone, message)
-
-  await prisma.reminder.update({
-    where: { id: reminder.id },
+  const claimed = await prisma.reminder.updateMany({
+    where: { id: reminder.id, sent: false },
     data: { sent: true, sentAt },
   })
+  if (claimed.count === 0) return // another attempt already took it
+
+  try {
+    await sendMessage(user.phone, message)
+  } catch (err) {
+    // Send failed — release the claim so the retry actually delivers
+    await prisma.reminder
+      .updateMany({ where: { id: reminder.id }, data: { sent: false, sentAt: null } })
+      .catch(() => {})
+    throw err
+  }
 
   await prisma.message.create({
     data: { userId: user.id, direction: 'out', body: message },
@@ -149,7 +165,7 @@ async function processReminder(assignmentId: string | undefined): Promise<void> 
 
   if (assignment.nudgeMode === 'persistent') {
     await scheduleFollowUp({
-      assignmentId,
+      assignmentId: assignment.id,
       userId: user.id,
       followUpNumber: 0,
       sentAfter: sentAt.toISOString(),
@@ -281,9 +297,9 @@ async function recoverOnStartup(): Promise<void> {
     if (reminder.assignment.status === 'open' && !reminder.assignment.user.optedOut) {
       if (!reminder.bullmqJobId) {
         // Job was never created — manually send to avoid racing BullMQ-promoted jobs
-        console.log(`[worker] Sending missed reminder for ${reminder.assignmentId} (no BullMQ job)`)
+        console.log(`[worker] Sending missed reminder ${reminder.id} for ${reminder.assignmentId} (no BullMQ job)`)
         try {
-          await processReminder(reminder.assignmentId)
+          await processReminder(reminder.id)
         } catch (e) {
           console.error('[worker] Failed to send missed reminder:', e)
         }
@@ -396,7 +412,17 @@ const worker = new Worker(
       const user = await prisma.user.findUnique({ where: { id: userId } })
       if (user && !user.optedOut) {
         const sentAfter = new Date().toISOString()
-        await sendMessage(user.phone, message)
+        try {
+          await sendMessage(user.phone, message)
+        } catch (err) {
+          // Send failed — release the sent flag so the BullMQ retry actually delivers
+          if (oneOffReminderId) {
+            await prisma.oneOffReminder
+              .update({ where: { id: oneOffReminderId }, data: { sent: false } })
+              .catch(() => {})
+          }
+          throw err
+        }
         await prisma.message.create({ data: { userId, direction: 'out', body: message } })
         await appendToConversation(userId, message)
         if (persistent) {
@@ -538,8 +564,13 @@ const worker = new Worker(
     }
 
     if (job.name === 'send-broadcast') {
-      const { phone, message } = job.data as { phone: string; message: string }
+      const { userId, phone, message } = job.data as { userId?: string; phone: string; message: string }
       await sendMessage(phone, message)
+      // Log so broadcasts show up in dashboard history + agent context
+      if (userId) {
+        await prisma.message.create({ data: { userId, direction: 'out', body: message } }).catch(() => {})
+        await appendToConversation(userId, message).catch(() => {})
+      }
       return
     }
 
@@ -570,9 +601,9 @@ const worker = new Worker(
       return
     }
 
-    const { assignmentId } = job.data as { assignmentId: string }
-    console.log(`[worker] Processing reminder for assignment ${assignmentId}`)
-    await processReminder(assignmentId)
+    const { assignmentId, reminderId } = job.data as { assignmentId?: string; reminderId?: string }
+    console.log(`[worker] Processing reminder ${reminderId ?? '(legacy job)'} for assignment ${assignmentId}`)
+    await processReminder(reminderId, assignmentId)
   },
   {
     connection: workerConnection,
@@ -591,9 +622,23 @@ recoverOnStartup().catch((e) => console.error('[worker] Startup recovery failed:
 startWatcherLoop(sendMessage)
 startOutageMonitor()
 
-reminderQueue.add('send-monday-checkin', {}, {
-  repeat: { pattern: '0 13 * * 1' }, // Monday 9 AM ET (UTC-4)
-  jobId: 'monday-checkin-cron',
-}).catch((e) => console.error('[worker] Failed to register Monday cron:', e))
+// Monday 9 AM Eastern year-round — a fixed UTC hour drifts when DST flips
+async function ensureMondayCron(): Promise<void> {
+  const desired = { pattern: '0 9 * * 1', tz: 'America/New_York' }
+  try {
+    const repeatables = await reminderQueue.getRepeatableJobs()
+    for (const r of repeatables) {
+      if (r.name === 'send-monday-checkin' && (r.pattern !== desired.pattern || r.tz !== desired.tz)) {
+        await reminderQueue.removeRepeatableByKey(r.key)
+        console.log(`[worker] Removed stale Monday cron (${r.pattern ?? r.every} ${r.tz ?? 'UTC'})`)
+      }
+    }
+  } catch (e) {
+    console.error('[worker] Failed to clean up stale Monday crons:', e)
+  }
+  await reminderQueue.add('send-monday-checkin', {}, { repeat: desired, jobId: 'monday-checkin-cron' })
+}
+
+ensureMondayCron().catch((e) => console.error('[worker] Failed to register Monday cron:', e))
 
 console.log('[worker] Nudge worker started')

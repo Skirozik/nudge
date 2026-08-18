@@ -1,9 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from './prisma'
 import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleCheckIn } from './queue'
-import { resolveTimezone } from './timezone'
+import { resolveTimezone, parseInTimezone } from './timezone'
 import { createWatch, listWatches, cancelWatch } from './watches'
-import { searchByCrn, searchByCourse, getCurrentTerm } from './banner'
+import { searchByCourse, getCurrentTerm } from './banner'
 
 const client = new Anthropic()
 
@@ -180,7 +180,8 @@ const TOOLS: Anthropic.Tool[] = [
 async function executeTool(
   name: string,
   input: Record<string, unknown>,
-  userId: string
+  userId: string,
+  userTz: string
 ): Promise<unknown> {
   switch (name) {
     case 'add_assignment': {
@@ -199,7 +200,8 @@ async function executeTool(
           userId,
           title,
           course: course ?? null,
-          dueAt: new Date(due_at),
+          // Wall-clock in the user's tz — corrects agent-stamped offsets across DST switches
+          dueAt: parseInTimezone(due_at, userTz),
           reminderOffsets: offsets,
           nudgeMode: nudge_mode ?? 'basic',
           status: 'open',
@@ -280,7 +282,7 @@ async function executeTool(
 
     case 'set_reminder': {
       const { message, fire_at, persistent } = input as { message: string; fire_at: string; persistent?: boolean }
-      await scheduleOneOffReminder(userId, message, new Date(fire_at), persistent ?? false)
+      await scheduleOneOffReminder(userId, message, parseInTimezone(fire_at, userTz), persistent ?? false)
       return { success: true, fire_at }
     }
 
@@ -522,7 +524,7 @@ SEAT WATCH RULES:
         if (block.type === 'tool_use') {
           let result: unknown
           try {
-            result = await executeTool(block.name, block.input as Record<string, unknown>, userId)
+            result = await executeTool(block.name, block.input as Record<string, unknown>, userId, tz)
           } catch (err) {
             result = { error: err instanceof Error ? err.message : String(err) }
           }

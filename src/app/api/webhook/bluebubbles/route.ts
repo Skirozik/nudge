@@ -4,7 +4,7 @@ import { sendMessage, sendTypingIndicator, downloadAttachment } from '@/lib/blue
 import { runAgent } from '@/lib/agent'
 import { parseSyllabusImage } from '@/lib/visionParser'
 import { normalizePhone } from '@/lib/phone'
-import { setSurgeMode } from '@/lib/redis'
+import { redis, setSurgeMode } from '@/lib/redis'
 import { scheduleBroadcast } from '@/lib/queue'
 import { handleServerFailure, clearNotified } from '@/lib/outage'
 
@@ -28,13 +28,17 @@ interface BBPayload {
   }
 }
 
-// In-memory dedup cache — BlueBubbles often fires the same webhook twice
-const recentGuids = new Set<string>()
-function isDuplicate(guid: string): boolean {
-  if (recentGuids.has(guid)) return true
-  recentGuids.add(guid)
-  setTimeout(() => recentGuids.delete(guid), 5 * 60 * 1000)
-  return false
+// Redis-based dedup — BlueBubbles often fires the same webhook twice, and on Vercel
+// the duplicates can land on different serverless instances, so in-memory state can't catch them.
+// SET NX is atomic: exactly one invocation wins.
+async function isDuplicate(guid: string): Promise<boolean> {
+  try {
+    const added = await redis.set(`nudge:webhook:guid:${guid}`, '1', 'EX', 300, 'NX')
+    return added !== 'OK'
+  } catch (err) {
+    console.error('[webhook] dedup check failed (processing anyway):', err instanceof Error ? err.message : String(err))
+    return false // Redis hiccup — better to risk a duplicate than drop a message
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -64,7 +68,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Deduplicate — BlueBubbles sends the same event twice
-  if (data.guid && isDuplicate(data.guid)) {
+  if (data.guid && (await isDuplicate(data.guid))) {
     return NextResponse.json({ ok: true })
   }
 
@@ -165,7 +169,18 @@ export async function POST(req: NextRequest) {
   // DASHBOARD keyword — only reply to active (non-opted-out) users
   if (upper === 'DASHBOARD') {
     const dashUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard`
-    await sendMessage(normalizedPhone, `Here's your dashboard: ${dashUrl}`)
+    const dashMsg = `Here's your dashboard: ${dashUrl}`
+    await sendMessage(normalizedPhone, dashMsg)
+    // Log the exchange so it shows in dashboard history (existing users only —
+    // unknown numbers still get their welcome flow on their first real message)
+    if (user) {
+      await prisma.message.createMany({
+        data: [
+          { userId: user.id, direction: 'in', body: text },
+          { userId: user.id, direction: 'out', body: dashMsg },
+        ],
+      })
+    }
     return NextResponse.json({ ok: true })
   }
 

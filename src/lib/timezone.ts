@@ -66,16 +66,46 @@ function getUtcOffsetMs(tz: string, date: Date): number {
 }
 
 export function shiftToSocialHour(utcDate: Date, tz: string): Date {
+  // hourCycle h23 — `hour12: false` can yield "24" at midnight on some ICU builds,
+  // which would make midnight look like a social hour (24 >= 9) and skip the shift
   const localHour = parseInt(
-    new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(utcDate),
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hourCycle: 'h23' }).format(utcDate),
     10
   )
 
-  if (localHour >= 9) return utcDate
+  if (Number.isNaN(localHour) || localHour >= 9) return utcDate
 
   // Pure UTC arithmetic — avoids server-timezone setHours bug
   const offsetMs = getUtcOffsetMs(tz, utcDate)
   const localTimeMs = utcDate.getTime() + offsetMs
   const localMidnightMs = Math.floor(localTimeMs / (24 * 60 * 60 * 1000)) * (24 * 60 * 60 * 1000)
-  return new Date(localMidnightMs + 9 * 60 * 60 * 1000 - offsetMs)
+  // Second pass: the offset at 9 AM may differ from the offset now (DST transition day)
+  const firstGuess = localMidnightMs + 9 * 60 * 60 * 1000 - offsetMs
+  const offsetAtTarget = getUtcOffsetMs(tz, new Date(firstGuess))
+  return new Date(localMidnightMs + 9 * 60 * 60 * 1000 - offsetAtTarget)
+}
+
+/**
+ * Interpret an ISO-8601 string as WALL-CLOCK time in the given IANA timezone,
+ * ignoring any UTC offset embedded in the string.
+ *
+ * Why: the agent stamps times with the user's CURRENT offset (e.g. -04:00 EDT).
+ * For a due date on the other side of a DST switch (e.g. November, EST -05:00),
+ * that offset is wrong by an hour. The user means "11:59 PM my time on that day" —
+ * so we recompute the instant from the wall clock using the offset in effect
+ * on the target date.
+ */
+export function parseInTimezone(iso: string, tz: string): Date {
+  const fallback = new Date(iso)
+  const m = iso.trim().match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?/)
+  if (!m) return fallback
+  try {
+    const wallUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], m[6] ? +m[6] : 0)
+    // Two-pass: guess the offset from the wall time, then refine at the guessed instant
+    const guess = wallUtc - getUtcOffsetMs(tz, new Date(wallUtc))
+    const instant = wallUtc - getUtcOffsetMs(tz, new Date(guess))
+    return new Date(instant)
+  } catch {
+    return fallback
+  }
 }
