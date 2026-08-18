@@ -65,7 +65,7 @@ interface CrnGroup {
   watchIds: string[]
 }
 
-async function pollAll(sendMessage: (phone: string, msg: string) => Promise<void>): Promise<void> {
+async function pollAll(): Promise<void> {
   const watches = await prisma.watch.findMany({
     where: { status: 'ACTIVE' },
     select: { id: true, userId: true, term: true, crn: true, courseCode: true, lastSeats: true, lastAlertAt: true, user: { select: { phone: true } } },
@@ -119,7 +119,7 @@ async function pollGroup(
 
   for (const w of groupWatches) {
     const { transition, seatEventId } = await applyDiff(w, section.seatsAvailable)
-    if (transition === '0_to_N') {
+    if (transition === '0_to_N' && seatEventId) {
       const ok = await checkAlertGuards({ id: w.id, lastAlertAt: w.lastAlertAt })
       if (ok) {
         await scheduleSeatAlert(w.id, seatEventId)
@@ -154,7 +154,7 @@ export function startWatcherLoop(
       }
 
       try {
-        await pollAll(sendMessage)
+        await pollAll()
       } catch (err) {
         console.error('[watcher] poll error:', err)
         consecutiveErrors++

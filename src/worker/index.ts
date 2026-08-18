@@ -8,7 +8,7 @@ import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleSeatAlert } f
 import { normalizePhone } from '../lib/phone'
 import { startWatcherLoop } from '../lib/watcher'
 import { startOutageMonitor, handleServerFailure, markOutage } from '../lib/outage'
-import { applyDiff, logMetric } from '../lib/watches'
+import { applyDiff, checkAlertGuards, logMetric } from '../lib/watches'
 import { searchByCrn } from '../lib/banner'
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
@@ -344,8 +344,11 @@ async function recoverOnStartup(): Promise<void> {
         const groupWatches = staleWatches.filter((sw) => sw.term === w.term && sw.crn === w.crn)
         for (const gw of groupWatches) {
           const { transition, seatEventId } = await applyDiff(gw, section.seatsAvailable)
-          if (transition === '0_to_N') {
-            await scheduleSeatAlert(gw.id, seatEventId)
+          if (transition === '0_to_N' && seatEventId) {
+            // Same guards as the normal poll path — recovery previously bypassed
+            // the 10-min cooldown and daily cap
+            const ok = await checkAlertGuards({ id: gw.id, lastAlertAt: gw.lastAlertAt })
+            if (ok) await scheduleSeatAlert(gw.id, seatEventId)
           }
         }
       } catch (err) {

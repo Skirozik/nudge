@@ -29,8 +29,20 @@ function normalizeSubject(s: string): string {
 let sessionCookies = ''
 let sessionTerm = ''
 let cachedActiveTerm: string | null = null
+let cachedActiveTermAt = 0
+const TERM_CACHE_MS = 6 * 60 * 60 * 1000 // re-check every 6h — a forever-cache serves the old term once the next registration period opens
 let lastRequestAt = 0
 const RATE_MS = 500
+
+// Serialize all Banner searches: the session state (cookies, selected term,
+// resetDataForm) is shared module state, and the rate limiter's read-then-set
+// isn't atomic — concurrent pollers would thrash sessions and burst requests.
+let searchChain: Promise<unknown> = Promise.resolve()
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const run = searchChain.then(fn, fn)
+  searchChain = run.catch(() => {})
+  return run
+}
 
 async function rateLimit(): Promise<void> {
   const wait = RATE_MS - (Date.now() - lastRequestAt)
@@ -63,17 +75,27 @@ function mergeCookies(a: string, b: string): string {
 
 /** Fetch active term from Banner's term list — first entry without "(View Only)". */
 export async function getActiveTerm(): Promise<string> {
-  if (cachedActiveTerm) return cachedActiveTerm
-  await rateLimit()
-  const res = await fetch(`${BASE}/ssb/classSearch/getTerms?searchTerm=&offset=1&max=20`, {
-    headers: { 'User-Agent': UA },
-  })
-  const terms = (await res.json()) as Array<{ code: string; description: string }>
-  const active = terms.find((t) => !t.description.includes('View Only'))
-  if (!active) throw new Error('[banner] no active term found in getTerms')
-  cachedActiveTerm = active.code
-  console.log(`[banner] active term: ${active.code} (${active.description})`)
-  return active.code
+  if (cachedActiveTerm && Date.now() - cachedActiveTermAt < TERM_CACHE_MS) return cachedActiveTerm
+  try {
+    await rateLimit()
+    const res = await fetch(`${BASE}/ssb/classSearch/getTerms?searchTerm=&offset=1&max=20`, {
+      headers: { 'User-Agent': UA },
+    })
+    const terms = (await res.json()) as Array<{ code: string; description: string }>
+    const active = terms.find((t) => !t.description.includes('View Only'))
+    if (!active) throw new Error('[banner] no active term found in getTerms')
+    if (cachedActiveTerm && cachedActiveTerm !== active.code) {
+      console.log(`[banner] active term changed: ${cachedActiveTerm} → ${active.code}`)
+    }
+    cachedActiveTerm = active.code
+    cachedActiveTermAt = Date.now()
+    console.log(`[banner] active term: ${active.code} (${active.description})`)
+    return active.code
+  } catch (err) {
+    // Refresh failed — fall back to the stale value if we have one
+    if (cachedActiveTerm) return cachedActiveTerm
+    throw err
+  }
 }
 
 // ── Session management ────────────────────────────────────────────────────────
@@ -136,7 +158,11 @@ async function resetDataForm(): Promise<void> {
 
 // ── Core search (GET — POST silently ignores filter params on GSU's instance) ─
 
-async function doSearch(
+function doSearch(params: Record<string, string>): Promise<RawSection[]> {
+  return serialize(() => doSearchInner(params))
+}
+
+async function doSearchInner(
   params: Record<string, string>,
   retried = false
 ): Promise<RawSection[]> {
@@ -167,12 +193,26 @@ async function doSearch(
   if ((res.status === 401 || res.status === 403) && !retried) {
     sessionCookies = ''
     await selectTerm(term)
-    return doSearch(params, true)
+    return doSearchInner(params, true)
   }
 
   if (!res.ok) throw new Error(`[banner] searchResults ${res.status}`)
 
-  const json = (await res.json()) as { data?: RawSection[] }
+  // Stale sessions usually 302 → fetch follows → 200 with an HTML login page.
+  // Without this, the dead session is reused forever and every poll fails silently.
+  const text = await res.text()
+  let json: { data?: RawSection[] }
+  try {
+    json = JSON.parse(text) as { data?: RawSection[] }
+  } catch {
+    if (!retried) {
+      console.log('[banner] non-JSON response (session expired?) — re-establishing session')
+      sessionCookies = ''
+      await selectTerm(term)
+      return doSearchInner(params, true)
+    }
+    throw new Error(`[banner] searchResults returned non-JSON after re-login (first 120 chars): ${text.slice(0, 120)}`)
+  }
   return json.data ?? []
 }
 

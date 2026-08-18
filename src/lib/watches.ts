@@ -25,6 +25,8 @@ export async function createWatch(params: {
   courseCode: string
   sectionLabel?: string
   source?: string | null
+  /** Seats available at creation time — prevents a false 0→N alert on the first poll when the section already has open seats. */
+  initialSeats?: number
 }): Promise<{ watch?: WatchRow; error?: string }> {
   const activeCount = await prisma.watch.count({
     where: { userId: params.userId, status: 'ACTIVE' },
@@ -45,7 +47,7 @@ export async function createWatch(params: {
     }
     const watch = await prisma.watch.update({
       where: { id: existing.id },
-      data: { status: 'ACTIVE', lastSeats: 0, alertCount: 0, lastAlertAt: null, lastCheckedAt: null },
+      data: { status: 'ACTIVE', lastSeats: params.initialSeats ?? 0, alertCount: 0, lastAlertAt: null, lastCheckedAt: null },
     })
     await logMetric('watch_created', params.userId, { crn: params.crn, courseCode: params.courseCode })
     return { watch: watch as WatchRow }
@@ -59,6 +61,7 @@ export async function createWatch(params: {
       courseCode: params.courseCode,
       sectionLabel: params.sectionLabel ?? null,
       source: params.source ?? null,
+      lastSeats: params.initialSeats ?? 0,
     },
   })
   await logMetric('watch_created', params.userId, { crn: params.crn, courseCode: params.courseCode })
@@ -84,6 +87,9 @@ export async function cancelWatch(
       where: { userId, status: 'ACTIVE' },
       data: { status },
     })
+    if (status === 'FULFILLED' && count > 0) {
+      await logMetric('seat_caught', userId, { query: 'all', count })
+    }
     return count
   }
 
@@ -100,21 +106,33 @@ export async function cancelWatch(
     where: { id: { in: watches.map((w) => w.id) } },
     data: { status },
   })
+  if (status === 'FULFILLED') {
+    // The STATS admin command counts this — it was read but never written before
+    await logMetric('seat_caught', userId, { query: q, count: watches.length, crns: watches.map((w) => w.crn) })
+  }
   return watches.length
 }
 
 export interface DiffResult {
   transition: '0_to_N' | 'N_to_0' | null
-  seatEventId: string
+  /** Present only when the seat count actually changed. */
+  seatEventId: string | null
 }
 
 export async function applyDiff(
   watch: { id: string; lastSeats: number; term: string; crn: string },
   newSeats: number
 ): Promise<DiffResult> {
-  const event = await prisma.seatEvent.create({
-    data: { term: watch.term, crn: watch.crn, seatsFrom: watch.lastSeats, seatsTo: newSeats },
-  })
+  // Only record an event when something changed — writing one per watch per poll
+  // adds ~288 no-op rows/day/watch and bloats the table for nothing
+  let seatEventId: string | null = null
+  if (newSeats !== watch.lastSeats) {
+    const event = await prisma.seatEvent.create({
+      data: { term: watch.term, crn: watch.crn, seatsFrom: watch.lastSeats, seatsTo: newSeats },
+    })
+    seatEventId = event.id
+  }
+
   await prisma.watch.update({
     where: { id: watch.id },
     data: { lastSeats: newSeats, lastCheckedAt: new Date() },
@@ -124,7 +142,7 @@ export async function applyDiff(
   if (watch.lastSeats === 0 && newSeats > 0) transition = '0_to_N'
   else if (watch.lastSeats > 0 && newSeats === 0) transition = 'N_to_0'
 
-  return { transition, seatEventId: event.id }
+  return { transition, seatEventId }
 }
 
 /** Returns true if it's safe to send an alert for this watch. */

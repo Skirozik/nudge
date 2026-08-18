@@ -326,6 +326,7 @@ async function executeTool(
           courseCode: section.courseCode,
           sectionLabel: section.sectionLabel,
           source: userRow?.source ?? null,
+          initialSeats: section.seatsAvailable,
         })
         if (result.error) return { error: result.error }
         return {
