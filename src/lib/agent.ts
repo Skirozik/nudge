@@ -1,9 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from './prisma'
-import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleCheckIn } from './queue'
+import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleCheckIn, scheduleFollowUp } from './queue'
 import { resolveTimezone, parseInTimezone } from './timezone'
 import { createWatch, listWatches, cancelWatch } from './watches'
 import { searchByCourse, getCurrentTerm } from './banner'
+import { getOrCreateLocationToken } from './locationToken'
 
 const client = new Anthropic()
 
@@ -173,6 +174,45 @@ const TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'set_location_reminder',
+    description:
+      'Create a reminder that fires when the user arrives at a named location (e.g. "home", "work"). Returns a Shortcut link and setup instructions the user must follow on their iPhone once.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        location: { type: 'string', description: 'Short lowercase label: "home", "work", "the gym", "school"' },
+        message: { type: 'string', description: 'What to send the user when they arrive' },
+        recurring: {
+          type: 'boolean',
+          description: 'If true, fires every time they arrive (default false = fires once then deactivates)',
+        },
+        persistent: {
+          type: 'boolean',
+          description: 'If true, escalates with follow-up nags until they reply (hooks into existing nag flow)',
+        },
+        cooldown_minutes: {
+          type: 'number',
+          description: 'Minimum minutes between firings when recurring. Default 120. Guards against geofence flapping.',
+        },
+      },
+      required: ['location', 'message'],
+    },
+  },
+  {
+    name: 'cancel_location_reminder',
+    description: 'Cancel active location reminders. Omit location or pass "all" to cancel everything.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        location: {
+          type: 'string',
+          description: 'Location label to cancel (e.g. "home"), or "all" to cancel all location reminders',
+        },
+      },
+      required: [],
     },
   },
 ]
@@ -368,6 +408,50 @@ async function executeTool(
       return { success: true, cancelled: count }
     }
 
+    case 'set_location_reminder': {
+      const { location, message, recurring, persistent, cooldown_minutes } = input as {
+        location: string
+        message: string
+        recurring?: boolean
+        persistent?: boolean
+        cooldown_minutes?: number
+      }
+      const token = await getOrCreateLocationToken(userId)
+      await prisma.locationReminder.create({
+        data: {
+          userId,
+          location: location.toLowerCase().trim(),
+          message,
+          recurring: recurring ?? false,
+          persistent: persistent ?? false,
+          cooldownMinutes: cooldown_minutes ?? 120,
+        },
+      })
+      const appUrl = process.env.APP_URL ?? 'https://nudgebuddy.net'
+      const webhookUrl = `${appUrl}/api/location-trigger?token=${token}`
+      return {
+        success: true,
+        setup_instructions: `To make this work, set up a free iOS Shortcut on your iPhone (one time per location):\n\n1. Open the Shortcuts app → Automations tab\n2. Tap + → New Automation → "When I Arrive"\n3. Pick "${location}" on the map and set a radius\n4. Add action: "Get Contents of URL"\n   URL: ${webhookUrl}\n   Method: POST\n   Body (JSON): {"location":"${location.toLowerCase().trim()}"}\n5. Turn off "Ask Before Running" (iOS 17+ only)\n\nAfter setup, Nudge will text you "${message}" the next time you arrive at ${location}.`,
+      }
+    }
+
+    case 'cancel_location_reminder': {
+      const { location } = input as { location?: string }
+      const normalizedLocation = location?.toLowerCase().trim()
+      if (!normalizedLocation || normalizedLocation === 'all') {
+        const { count } = await prisma.locationReminder.updateMany({
+          where: { userId, active: true },
+          data: { active: false },
+        })
+        return { success: true, cancelled: count }
+      }
+      const { count } = await prisma.locationReminder.updateMany({
+        where: { userId, location: normalizedLocation, active: true },
+        data: { active: false },
+      })
+      return { success: true, cancelled: count }
+    }
+
     default:
       return { error: `Unknown tool: ${name}` }
   }
@@ -457,7 +541,17 @@ SEAT WATCH RULES:
 - NEVER guess or invent a CRN. Only use CRNs returned by watch_course sections list.
 - Never promise to register the user. You only alert when a seat opens — registration is on them.
 - If the user says "got it", "i'm in", "i got in", "i registered", or similar after an alert, call cancel_watch with fulfilled=true. Celebrate briefly.
-- Max 5 active watches per user. If watch_course returns an error about the limit, tell them clearly.`
+- Max 5 active watches per user. If watch_course returns an error about the limit, tell them clearly.
+
+LOCATION REMINDERS:
+- "when I get home / arrive at / get to [place]" → set_location_reminder
+- Location label should be short and lowercase: "home", "work", "the gym", "school"
+- Use recurring=true for "every time I get home"; omit (defaults false) for "next time I get home"
+- Use persistent=true if they want to be nagged until they reply
+- ALWAYS show the setup_instructions from the tool response verbatim after creating — the user needs those steps
+- The Shortcut only needs to be set up once per location label; subsequent reminders for the same location reuse it
+- If the conversation history contains a "(location trigger fired: ...)" message, the user is replying to a location nag — respond naturally to whatever they say
+- "cancel my location reminder for home" → cancel_location_reminder with location="home"`
 
   // Get or create conversation history
   let convo = await prisma.conversation.findUnique({ where: { userId } })

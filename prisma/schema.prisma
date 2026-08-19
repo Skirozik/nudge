@@ -8,19 +8,21 @@ datasource db {
 }
 
 model User {
-  id              String           @id @default(uuid())
-  phone           String           @unique
-  timezone        String           @default("America/New_York")
-  persona         String           @default("coach")
-  createdAt       DateTime         @default(now())
-  optedOut        Boolean          @default(false)
-  source          String?
-  assignments     Assignment[]
-  conversation    Conversation?
-  messages        Message[]
-  sessions        Session[]
-  oneOffReminders OneOffReminder[]
-  watches         Watch[]
+  id                String             @id @default(uuid())
+  phone             String             @unique
+  timezone          String             @default("America/New_York")
+  persona           String             @default("coach")
+  createdAt         DateTime           @default(now())
+  optedOut          Boolean            @default(false)
+  source            String?
+  locationToken     String?            @unique
+  assignments       Assignment[]
+  conversation      Conversation?
+  messages          Message[]
+  sessions          Session[]
+  oneOffReminders   OneOffReminder[]
+  watches           Watch[]
+  locationReminders LocationReminder[]
 }
 
 model Assignment {
@@ -112,6 +114,22 @@ model Session {
   token     String   @unique @default(uuid())
   expiresAt DateTime
   createdAt DateTime @default(now())
+}
+
+// ── Location Reminders ─────────────────────────────────────────────────────
+
+model LocationReminder {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  location        String
+  message         String
+  active          Boolean   @default(true)
+  persistent      Boolean   @default(false)
+  recurring       Boolean   @default(false)
+  lastFiredAt     DateTime?
+  cooldownMinutes Int       @default(120)
+  createdAt       DateTime  @default(now())
 }
 
 // ── SeatSnipe ──────────────────────────────────────────────────────────────
