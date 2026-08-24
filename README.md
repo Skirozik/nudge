@@ -6,7 +6,7 @@
 
 **The reminder you can't ignore.** · [nudgebuddy.net](https://nudgebuddy.net)
 
-Nudge is a self-hosted AI study buddy that texts you on iMessage. Tell it what's due, and it'll hound you until you do it — built specifically for people with real ADHD.
+Nudge is a self-hosted AI assistant that texts you on iMessage. Tell it what's due, and it'll hound you until you do it — built for people with real ADHD and GSU students trying to snipe open course seats.
 
 ---
 
@@ -16,24 +16,51 @@ You text it like a friend. It handles the rest.
 
 ```
 You:   i have a bio exam friday at 8am
-Nudge: bio exam friday 8am — want me to really nag you on this one or just a single reminder?
-You:   nag me lol
-Nudge: locked in. i'll start blowing up your phone thursday morning. you asked for this 😤
+Nudge: bio exam friday 8am — want me to really nag you on this one?
+You:   yes lol
+Nudge: locked in. blowing your phone up thursday. you asked for this
 ```
 
-When reminder time hits, Nudge texts you. If you don't reply, it escalates — 5 texts, 30 seconds apart, getting progressively more unhinged. It stops the moment you respond.
+When reminder time hits, Nudge texts you. If you don't reply, it escalates — 5 texts, progressively more unhinged. Stops the moment you respond.
 
 ---
 
 ## Features
 
 - **iMessage native** — shows up where your friends do. Blue bubbles, typing indicators, the whole thing.
-- **Persistent nag mode** — 5 escalating texts, 30 seconds apart. Stops when you reply.
+- **Persistent nag mode** — escalating texts, 30 seconds apart. Stops when you reply.
 - **Natural language** — "remind me to submit my essay tomorrow at noon" just works.
-- **One-off reminders** — not just assignments. "remind me to take my meds in 20 minutes" works too.
-- **Multiple personalities** — Coach, Snarky, or Anxious. Pick your vibe.
+- **One-off reminders** — "remind me to take my meds in 20 minutes" works too.
+- **Multiple personas** — Coach, Snarky, or Anxious. Pick your vibe.
 - **Web dashboard** — see your assignments, pick your persona, mark things done.
-- **OTP login** — sign into the dashboard via a code Nudge texts you. No passwords.
+- **OTP login** — sign in via a code Nudge texts you. No passwords.
+- **Location reminders** — "nag me when I get home to take out the trash." Uses iOS Shortcuts + geofencing. No app needed.
+- **SeatSnipe** — monitors GSU Banner for open course seats and texts you the instant one opens. Polling every 60–90s during surge mode.
+
+---
+
+## SeatSnipe
+
+Built for GSU students during add/drop. Text a course name or CRN, and Nudge watches Banner 24/7 until a seat opens.
+
+```
+You:   watch CSC 1301
+Nudge: Found 3 sections for CSC 1301 — reply with a number:
+       1. Sec 002, MW 11:00–12:15, Saghaeiannejad (40 seats open)
+       2. Sec 005, TR 2:00–3:15, Williams (full)
+       3. Sec 008, Online Async, Johnson (full)
+You:   3
+Nudge: Watching CSC 1301 Sec 008 (CRN 12345). I'll text you the second a seat opens.
+
+[3 hours later]
+Nudge: 🚨 A seat just opened in CSC 1301 Sec 008 — go register NOW before it's gone
+```
+
+- Polls Banner every 60–90s in surge mode, 5min normal
+- Alerts fire only on 0→seat transitions (not flapping)
+- 10-min cooldown + 6/day cap per watch to prevent spam
+- Up to 5 active watches per user
+- Watches auto-expire when add/drop closes
 
 ---
 
@@ -41,31 +68,36 @@ When reminder time hits, Nudge texts you. If you don't reply, it escalates — 5
 
 | Layer | Tech |
 |---|---|
-| Frontend / API | Next.js 15 (App Router) |
-| Database | PostgreSQL via Prisma 7 |
-| Job queue | BullMQ + Redis |
+| Frontend / API | Next.js 14 (App Router), Vercel |
+| Database | Neon (serverless Postgres) + Prisma |
+| Job queue | BullMQ + Upstash Redis |
 | iMessage bridge | BlueBubbles |
 | AI | Anthropic API |
 | Auth | JWT via jose |
-| Infrastructure | Docker (Postgres + Redis) |
+| Worker | Node.js + PM2 (persistent process) |
+| Banner API | Custom TypeScript client with session cookie management |
 
 ---
 
-## How it works
+## Architecture
 
 ```
-iMessage → BlueBubbles → Webhook → Next.js API → AI Agent → BlueBubbles → iMessage
+iMessage → BlueBubbles → Webhook → Next.js API (Vercel)
+                                         ↓
+                                    AI Agent Loop
+                                         ↓
+                               BullMQ (Upstash Redis)
+                                         ↓
+                              Worker (PM2, persistent)
+                             /                       \
+                    Reminder jobs              SeatSnipe watcher loop
                                                       ↓
-                                               BullMQ Queue
+                                             Banner API polling
                                                       ↓
-                                            Worker (scheduled reminders)
+                                              Alert → iMessage
 ```
 
-1. User texts the iMessage address
-2. BlueBubbles fires a webhook to the Next.js server
-3. The AI agent parses the message, calls tools (add assignment, set reminder, etc.)
-4. Reminders are scheduled in BullMQ/Redis
-5. When a reminder fires, the worker generates a message and sends it back via BlueBubbles
+The worker is a persistent Node.js process managed by PM2. It runs the BullMQ consumer and the SeatSnipe polling loop in the same event loop — no separate process needed.
 
 ---
 
@@ -73,9 +105,10 @@ iMessage → BlueBubbles → Webhook → Next.js API → AI Agent → BlueBubble
 
 - A Mac (always-on) running [BlueBubbles](https://bluebubbles.app) with an Apple ID
 - SIP disabled + BlueBubbles Private API enabled (for typing indicators)
-- Node.js 20+
-- Docker (for Postgres + Redis)
-- An Anthropic API key
+- Node.js 22+
+- [Neon](https://neon.tech) account (Postgres)
+- [Upstash](https://upstash.com) account (Redis)
+- Anthropic API key
 
 ---
 
@@ -91,20 +124,14 @@ npm install
 
 ### 2. Configure environment
 
-Copy `.env.example` to `.env` and fill in your values:
-
-```bash
-cp .env.example .env
-```
-
 ```env
-# Database
-DATABASE_URL=postgresql://nudge:nudge@localhost:5432/nudge
+# Database (Neon)
+DATABASE_URL=postgresql://...
 
-# Redis
-REDIS_URL=redis://localhost:6379
+# Redis (Upstash)
+REDIS_URL=rediss://...
 
-# BlueBubbles (your Mac's local IP)
+# BlueBubbles (your Mac's local IP or tunnel URL)
 BLUEBUBBLES_URL=http://192.168.1.x:1234
 BLUEBUBBLES_PASSWORD=your_password
 BLUEBUBBLES_METHOD=private-api
@@ -117,39 +144,40 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 # Session signing
 SESSION_SECRET=generate_another_random_string_here
+
+# App URL (used for location reminder webhook URLs)
+NEXT_PUBLIC_APP_URL=https://yourdomain.com
+
+# Admin iMessage address (for admin commands: stats, surge on/off, broadcast)
+ADMIN_PHONE=+1XXXXXXXXXX
+
+# SeatSnipe: date to expire all watches (GSU add/drop end)
+TERM_WATCH_END=2026-08-28
 ```
 
-### 3. Start infrastructure
-
-```bash
-docker compose up -d
-```
-
-### 4. Run database migrations
+### 3. Run migrations
 
 ```bash
 npx prisma migrate deploy
 npx prisma generate
 ```
 
-### 5. Start the app
+### 4. Deploy
 
-Open two terminals:
+- **Frontend/API**: Deploy to Vercel. Add all env vars in the Vercel dashboard.
+- **Worker**: Run on any always-on machine with PM2:
 
 ```bash
-# Terminal 1 — Next.js server
-npm run dev
-
-# Terminal 2 — reminder worker
-npm run worker
+pm2 start ecosystem.config.cjs
+pm2 save
 ```
 
-### 6. Configure BlueBubbles
+### 5. Configure BlueBubbles
 
 In BlueBubbles Settings → API → Webhooks, add:
 
 ```
-http://YOUR_LOCAL_IP:3000/api/webhook/bluebubbles?secret=YOUR_WEBHOOK_SECRET
+https://yourdomain.com/api/webhook/bluebubbles?secret=YOUR_WEBHOOK_SECRET
 ```
 
 Enable **All Events**.
@@ -161,37 +189,48 @@ Enable **All Events**.
 ```
 nudge/
 ├── prisma/
-│   └── schema.prisma          # Database models
+│   ├── schema.prisma              # User, Assignment, Watch, LocationReminder, etc.
+│   └── migrations/
 ├── src/
 │   ├── app/
-│   │   ├── page.tsx           # Landing page
-│   │   ├── login/             # OTP login flow
-│   │   ├── dashboard/         # User dashboard
+│   │   ├── page.tsx               # Landing page
+│   │   ├── login/                 # OTP login flow
+│   │   ├── dashboard/             # User dashboard
 │   │   └── api/
-│   │       ├── webhook/       # BlueBubbles webhook handler
-│   │       ├── auth/          # send-otp, verify-otp, logout
-│   │       └── dashboard/     # assignments + user API
+│   │       ├── webhook/           # BlueBubbles inbound webhook
+│   │       ├── auth/              # send-otp, verify-otp, logout
+│   │       ├── dashboard/         # Assignments + user REST API
+│   │       └── location-trigger/  # iOS Shortcuts location webhook
 │   ├── lib/
-│   │   ├── agent.ts           # AI agent + tool execution
-│   │   ├── bluebubbles.ts     # iMessage send + typing indicator
-│   │   ├── queue.ts           # BullMQ job scheduling
-│   │   ├── session.ts         # JWT auth helpers
-│   │   └── timezone.ts        # Timezone resolution
+│   │   ├── agent.ts               # AI agent loop + tool execution
+│   │   ├── banner.ts              # GSU Banner API client (seat data)
+│   │   ├── bluebubbles.ts         # iMessage send + typing indicator
+│   │   ├── locationToken.ts       # Per-user webhook token provisioning
+│   │   ├── phone.ts               # Phone number normalization
+│   │   ├── queue.ts               # BullMQ job scheduling
+│   │   ├── session.ts             # JWT auth helpers
+│   │   ├── timezone.ts            # Timezone resolution
+│   │   ├── watcher.ts             # SeatSnipe polling loop
+│   │   └── watches.ts             # Watch CRUD + diff logic
 │   ├── worker/
-│   │   └── index.ts           # Background reminder worker
-│   └── middleware.ts          # Route protection
-├── docker-compose.yml
-└── Dockerfile
+│   │   └── index.ts               # BullMQ worker + SeatSnipe watcher entry
+│   └── middleware.ts              # Route protection
+├── ecosystem.config.cjs           # PM2 config
+└── vitest.config.ts               # Unit tests (Vitest)
 ```
 
 ---
 
-## Nudge modes
+## Admin commands
 
-| Mode | Behavior |
+Text these from `ADMIN_PHONE`:
+
+| Command | What it does |
 |---|---|
-| **Basic** | One reminder at the scheduled time |
-| **Persistent** | 5 texts, 30 seconds apart, with escalating energy. Stops the moment you reply. |
+| `stats` | Active users, watches, 24h alerts, total seats caught |
+| `surge on` | Switch SeatSnipe to 60–90s polling |
+| `surge off` | Return to 5-min polling |
+| `broadcast <msg>` | Send a message to all opted-in users |
 
 ---
 
@@ -207,29 +246,12 @@ Change yours anytime in the dashboard or just tell Nudge.
 
 ---
 
-## Dashboard
+## Notes
 
-Visit `http://localhost:3000` while the server is running.
-
-- `/` — landing page
-- `/login` — sign in via iMessage OTP
-- `/dashboard` — your assignments, persona picker, mark done
-
----
-
-## Important notes
-
-- **Never run two worker processes simultaneously.** The second one will pick up jobs from the first, causing duplicate sends.
-- **After `prisma generate`, fully restart the dev server** — hot reload doesn't pick up generated client changes.
-- **BlueBubbles webhook** may need to be re-saved in Settings after server downtime.
-- **Add Nudge to your Do Not Disturb allowed contacts** so reminders get through even when your phone is in focus mode.
-
----
-
-## Roadmap
-
-- [ ] Voice call escalation via Twilio (if 5 texts aren't enough)
-- [ ] Multi-instance support for scale (multiple BlueBubbles instances)
+- Never run two worker processes simultaneously — duplicate sends will happen.
+- After `prisma generate`, fully restart the worker — hot reload doesn't pick up client changes.
+- BlueBubbles webhook may need to be re-saved in Settings after server downtime.
+- Add Nudge to your Do Not Disturb allowed contacts so reminders get through in focus mode.
 
 ---
 
