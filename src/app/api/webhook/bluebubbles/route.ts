@@ -196,25 +196,28 @@ export async function POST(req: NextRequest) {
     data: { userId: user.id, direction: 'in', body: text },
   })
 
-  // New users get a welcome sequence — skip the agent on their first message
+  // New users get a welcome sequence, then fall through to the agent so their first request is handled
   if (isNewUser) {
     try {
-      const welcome = "HI! I'm Nudge! I send you reminders for your assignments and daily tasks so nothing slips through. just tell me what's due and I'll handle the rest 📚"
-      await sendMessage(normalizedPhone, welcome)
-      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: welcome } })
+      const isSeatSnipe = /\bwatch\b|\bcrn\b/i.test(text)
 
-      const tip = "💡 Quick tip: add me to your allowed contacts so reminders get through even on Do Not Disturb → Settings › Focus › Do Not Disturb › People › Add."
+      const intro = "hey, welcome! i'm nudge 👋"
+      await sendMessage(normalizedPhone, intro)
+      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: intro } })
+
+      const context = isSeatSnipe
+        ? "since you're here for seatsnipe — heads up: when i text you that a seat opened, you need to register right away. seats go fast and i can't hold one for you."
+        : "i send you reminders for assignments and tasks so nothing slips through. just tell me what's due and i'll handle the rest."
+      await sendMessage(normalizedPhone, context)
+      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: context } })
+
+      const tip = "💡 add me to your allowed contacts so messages get through even on Do Not Disturb → Settings › Focus › Do Not Disturb › People › Add."
       await sendMessage(normalizedPhone, tip)
       await prisma.message.create({ data: { userId: user.id, direction: 'out', body: tip } })
-
-      const dashUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/dashboard`
-      const dashMsg = `You can also manage your assignments and settings at ${dashUrl}`
-      await sendMessage(normalizedPhone, dashMsg)
-      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: dashMsg } })
     } catch (err) {
       console.error('[webhook] new user welcome error:', err)
     }
-    return NextResponse.json({ ok: true })
+    // fall through — agent runs below to handle their first message
   }
 
   // Admin command short-circuit — must be before runAgent()
