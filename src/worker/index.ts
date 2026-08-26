@@ -624,6 +624,32 @@ reminderQueue.on('error', (err) => console.error('[queue] Queue error:', err))
 recoverOnStartup().catch((e) => console.error('[worker] Startup recovery failed:', e))
 startWatcherLoop(sendMessage)
 startOutageMonitor()
+startWatcherDeadMan()
+
+function startWatcherDeadMan(): void {
+  const CHECK_INTERVAL_MS = 10 * 60_000  // check every 10 min
+  const STALE_THRESHOLD_MS = 15 * 60_000 // alert if no heartbeat for 15 min
+  const adminPhone = process.env.ADMIN_PHONE ? normalizePhone(process.env.ADMIN_PHONE) : null
+  if (!adminPhone) return
+
+  setInterval(async () => {
+    try {
+      const last = await prisma.metricEvent.findFirst({
+        where: { kind: 'poller_heartbeat' },
+        orderBy: { createdAt: 'desc' },
+      })
+      if (!last) return
+      const gap = Date.now() - last.createdAt.getTime()
+      if (gap > STALE_THRESHOLD_MS) {
+        const mins = Math.round(gap / 60_000)
+        console.error(`[worker] dead-man: no watcher heartbeat for ${mins}min`)
+        await sendMessage(adminPhone, `⚠️ SeatSnipe watcher has been silent for ${mins} minutes — check PM2`)
+      }
+    } catch {
+      // don't crash the process if the dead-man check itself fails
+    }
+  }, CHECK_INTERVAL_MS)
+}
 
 // Monday 9 AM Eastern year-round — a fixed UTC hour drifts when DST flips
 async function ensureMondayCron(): Promise<void> {

@@ -17,8 +17,23 @@ const CLASS_SEARCH_URL = `${BASE}/ssb/classSearch/classSearch`
 
 const UA = 'SeatSnipe/1.0 (nudgebuddy.net) seat-availability-monitor zacharyinyan@gmail.com'
 
-// GSU uses "CSC" but students often type "CSCI"
-const SUBJECT_MAP: Record<string, string> = { CSCI: 'CSC' }
+// Common student abbreviations → GSU subject codes
+const SUBJECT_MAP: Record<string, string> = {
+  CSCI: 'CSC',
+  CS: 'CSC',
+  ECO: 'ECON',
+  ECONOMICS: 'ECON',
+  BIO: 'BIOL',
+  BIOLOGY: 'BIOL',
+  CHEM: 'CHEM',
+  MATH: 'MATH',
+  PHYS: 'PHYS',
+  PHYSICS: 'PHYS',
+  PSYCH: 'PSYC',
+  PSYCHOLOGY: 'PSYC',
+  COMM: 'SCOM',
+  COMMUNICATIONS: 'SCOM',
+}
 
 function normalizeSubject(s: string): string {
   const up = s.toUpperCase()
