@@ -22,6 +22,8 @@ const SUBJECT_MAP: Record<string, string> = {
   CSCI: 'CSC',
   CS: 'CSC',
   ECO: 'ECON',
+  ENG: 'ENGL',
+  ENGLISH: 'ENGL',
   ECONOMICS: 'ECON',
   BIO: 'BIOL',
   BIOLOGY: 'BIOL',
