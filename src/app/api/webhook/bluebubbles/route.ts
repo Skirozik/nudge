@@ -141,8 +141,12 @@ export async function POST(req: NextRequest) {
 
   const upper = text.toUpperCase()
 
-  // STOP opt-out — carrier standard: no reply
-  if (upper === 'STOP') {
+  // Opt-out keywords. STOP is the carrier standard and stays silent, but people
+  // reasonably reach for UNSUBSCRIBE/END/QUIT/CANCEL too — and anything we don't
+  // match here falls through to the agent, which replies as if nothing happened.
+  // That reads as "I asked to stop and it kept texting me", so treat them alike.
+  const OPT_OUT_WORDS = ['STOP', 'UNSUBSCRIBE', 'END', 'QUIT', 'CANCEL', 'STOPALL', 'REVOKE', 'OPTOUT', 'OPT OUT']
+  if (OPT_OUT_WORDS.includes(upper)) {
     await prisma.user.upsert({
       where: { phone: normalizedPhone },
       update: { optedOut: true },
