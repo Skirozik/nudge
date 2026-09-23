@@ -8,7 +8,7 @@ import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleSeatAlert } f
 import { normalizePhone } from '../lib/phone'
 import { startWatcherLoop } from '../lib/watcher'
 import { startOutageMonitor, handleServerFailure, markOutage } from '../lib/outage'
-import { applyDiff, checkAlertGuards, logMetric } from '../lib/watches'
+import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH } from '../lib/watches'
 import { searchByCrn } from '../lib/banner'
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
@@ -329,7 +329,11 @@ async function recoverOnStartup(): Promise<void> {
   // Watch recovery: poll ACTIVE watches whose lastCheckedAt is >15min stale (missed while down)
   const staleThreshold = new Date(Date.now() - 15 * 60_000)
   const staleWatches = await prisma.watch.findMany({
-    where: { status: 'ACTIVE', OR: [{ lastCheckedAt: null }, { lastCheckedAt: { lt: staleThreshold } }] },
+    where: {
+      status: 'ACTIVE',
+      alertCount: { lt: MAX_ALERTS_PER_WATCH },
+      OR: [{ lastCheckedAt: null }, { lastCheckedAt: { lt: staleThreshold } }],
+    },
   })
   if (staleWatches.length > 0) {
     console.log(`[worker] Recovery: ${staleWatches.length} stale watch(es) to check`)
@@ -344,11 +348,19 @@ async function recoverOnStartup(): Promise<void> {
         const groupWatches = staleWatches.filter((sw) => sw.term === w.term && sw.crn === w.crn)
         for (const gw of groupWatches) {
           const { transition, seatEventId } = await applyDiff(gw, section.seatsAvailable)
-          if (transition === '0_to_N' && seatEventId) {
-            // Same guards as the normal poll path — recovery previously bypassed
-            // the 10-min cooldown and daily cap
-            const ok = await checkAlertGuards({ id: gw.id, lastAlertAt: gw.lastAlertAt })
-            if (ok) await scheduleSeatAlert(gw.id, seatEventId)
+          // Same claim as the normal poll path, so recovery can't double-alert.
+          const claim = await claimAlertSlot(gw, section.seatsAvailable, transition)
+          if (!claim) continue
+          try {
+            await scheduleSeatAlert({
+              watchId: gw.id,
+              alertNumber: claim.alertNumber,
+              seats: section.seatsAvailable,
+              seatEventId,
+            })
+          } catch (err) {
+            await releaseAlertSlot(gw.id, claim.retired)
+            throw err
           }
         }
       } catch (err) {
@@ -544,24 +556,34 @@ const worker = new Worker(
     }
 
     if (job.name === 'send-seat-alert') {
-      const { watchId, seatEventId } = job.data as { watchId: string; seatEventId: string }
+      const { watchId, seatEventId, seats, alertNumber } = job.data as {
+        watchId: string
+        seatEventId: string | null
+        seats: number
+        alertNumber: number
+      }
       const watch = await prisma.watch.findUnique({
         where: { id: watchId },
         include: { user: true },
       })
-      if (!watch || watch.status !== 'ACTIVE' || watch.user.optedOut) return
+      // PAUSED is expected on the final alert — claimAlertSlot retires the watch
+      // at claim time — so gate on the states that actually mean "don't send".
+      const dead = watch && ['CANCELLED', 'EXPIRED', 'FULFILLED'].includes(watch.status)
+      if (!watch || dead || watch.user.optedOut) return
 
-      const seats = watch.lastSeats
       const courseLabel = watch.sectionLabel ? `${watch.courseCode} (${watch.sectionLabel})` : watch.courseCode
-      const msg = `🚨 Seat opened in ${courseLabel} — ${seats} seat${seats === 1 ? '' : 's'} available! Register at gosolar.gsu.edu before it fills up.`
+      // seats comes from the payload: watch.lastSeats is overwritten by every
+      // poll and can read 0 by the time this job runs.
+      const isFinal = alertNumber >= MAX_ALERTS_PER_WATCH
+      const tail = isFinal
+        ? ` (that's ${alertNumber} of ${MAX_ALERTS_PER_WATCH} — this watch is done. text "watch ${watch.courseCode} ${watch.crn}" to turn it back on.)`
+        : ''
+      const msg = `🚨 Seat opened in ${courseLabel} — ${seats} seat${seats === 1 ? '' : 's'} available! Register at gosolar.gsu.edu before it fills up.${tail}`
 
+      // alertCount/lastAlertAt were already written by claimAlertSlot.
       await sendMessage(watch.user.phone, msg)
-      await prisma.watch.update({
-        where: { id: watchId },
-        data: { alertCount: { increment: 1 }, lastAlertAt: new Date() },
-      })
       await prisma.message.create({ data: { userId: watch.userId, direction: 'out', body: msg } })
-      await logMetric('alert_sent', watch.userId, { watchId, seatEventId })
+      await logMetric('alert_sent', watch.userId, { watchId, seatEventId, alertNumber })
       console.log(`[worker] Seat alert sent for watch ${watchId} (${watch.courseCode})`)
       return
     }
@@ -621,10 +643,18 @@ worker.on('failed', (job, err) => console.error(`[worker] Job ${job?.id} failed:
 worker.on('error', (err) => console.error('[worker] Worker error:', err))
 reminderQueue.on('error', (err) => console.error('[queue] Queue error:', err))
 
-recoverOnStartup().catch((e) => console.error('[worker] Startup recovery failed:', e))
-startWatcherLoop(sendMessage)
-startOutageMonitor()
-startWatcherDeadMan()
+// Recovery and the poll loop both applyDiff the same watches, so racing them
+// writes duplicate SeatEvent rows for one real transition — hence the wait.
+// Capped, because a wedged Banner call must never keep the poller down.
+const RECOVERY_GRACE_MS = 2 * 60_000
+Promise.race([
+  recoverOnStartup().catch((e) => console.error('[worker] Startup recovery failed:', e)),
+  new Promise((resolve) => setTimeout(resolve, RECOVERY_GRACE_MS)),
+]).finally(() => {
+  startWatcherLoop(sendMessage)
+  startOutageMonitor()
+  startWatcherDeadMan()
+})
 
 function startWatcherDeadMan(): void {
   const CHECK_INTERVAL_MS = 10 * 60_000  // check every 10 min

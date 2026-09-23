@@ -152,12 +152,22 @@ export async function cancelPendingReminders(assignmentId: string): Promise<void
   }
 }
 
-export async function scheduleSeatAlert(watchId: string, seatEventId: string): Promise<void> {
+export async function scheduleSeatAlert(params: {
+  watchId: string
+  /** 1-based slot from claimAlertSlot — also the dedup key. */
+  alertNumber: number
+  /** Seats observed at claim time; the watch row may be stale by send time. */
+  seats: number
+  seatEventId: string | null
+}): Promise<void> {
+  const { watchId, alertNumber, seats, seatEventId } = params
   await reminderQueue.add(
     'send-seat-alert',
-    { watchId, seatEventId },
+    { watchId, alertNumber, seats, seatEventId },
     {
-      jobId: `alert:${watchId}:${seatEventId}`,
+      // Keyed on the claimed slot, not the SeatEvent: the slot is unique per
+      // alert and is what makes a BullMQ retry idempotent.
+      jobId: `alert:${watchId}:${alertNumber}`,
       attempts: 3,
       backoff: { type: 'exponential', delay: 10_000 },
       removeOnComplete: true,

@@ -287,7 +287,9 @@ function parse(raw: RawSection): SectionInfo {
     crn,
     courseCode: `${subject} ${number}`,
     sectionLabel: `Sec ${seq}${days ? `, ${days}` : ''} ${time}, ${instructor}`.trim(),
-    seatsAvailable: raw.seatsAvailable ?? 0,
+    // Banner reports negative values for over-enrolled sections; clamp so they
+    // read as "full" rather than poisoning the 0→N edge detection.
+    seatsAvailable: Math.max(0, raw.seatsAvailable ?? 0),
     maximumEnrollment: raw.maximumEnrollment ?? 0,
   }
 }

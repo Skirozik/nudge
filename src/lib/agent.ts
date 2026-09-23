@@ -397,6 +397,8 @@ async function executeTool(
           courseCode: w.courseCode,
           sectionLabel: w.sectionLabel,
           lastSeats: w.lastSeats,
+          alertsSent: w.alertCount,
+          retired: w.status === 'PAUSED',
         })),
       }
     }
@@ -542,6 +544,7 @@ SEAT WATCH RULES:
 - Never promise to register the user. You only alert when a seat opens — registration is on them.
 - If the user says "got it", "i'm in", "i got in", "i registered", or similar after an alert, call cancel_watch with fulfilled=true. Celebrate briefly.
 - Max 5 active watches per user. If watch_course returns an error about the limit, tell them clearly.
+- A watch retires after 3 seat alerts. list_watches marks those with retired=true — say that one's done and offer to turn it back on (call watch_course again with the same course code and CRN). Don't describe a retired watch as still active.
 
 LOCATION REMINDERS:
 - "when I get home / arrive at / get to [place]" → set_location_reminder

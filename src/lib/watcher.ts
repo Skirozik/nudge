@@ -1,6 +1,6 @@
 import { prisma } from './prisma'
 import { searchByCrn } from './banner'
-import { applyDiff, checkAlertGuards, logMetric } from './watches'
+import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH } from './watches'
 import { scheduleSeatAlert } from './queue'
 import { isSurgeMode } from './redis'
 
@@ -34,18 +34,25 @@ async function getInterval(): Promise<number> {
 }
 
 async function expireWatches(sendMessage: (phone: string, msg: string) => Promise<void>): Promise<void> {
-  const active = await prisma.watch.findMany({
-    where: { status: 'ACTIVE' },
+  // PAUSED watches have spent their alert budget and are no longer polled, but
+  // they still show in list_watches — sweep them too so none linger past the term.
+  const live = await prisma.watch.findMany({
+    where: { status: { in: ['ACTIVE', 'PAUSED'] } },
     include: { user: { select: { phone: true } } },
   })
-  if (!active.length) return
+  if (!live.length) return
 
-  await prisma.watch.updateMany({ where: { status: 'ACTIVE' }, data: { status: 'EXPIRED' } })
-  await logMetric('watches_expired', null, { count: active.length })
+  await prisma.watch.updateMany({
+    where: { status: { in: ['ACTIVE', 'PAUSED'] } },
+    data: { status: 'EXPIRED' },
+  })
+  await logMetric('watches_expired', null, { count: live.length })
 
+  // Only users with a still-running watch get the text; a retired one already
+  // got a final alert saying it was done.
   const byPhone = new Map<string, string>()
-  for (const w of active) {
-    byPhone.set(w.user.phone, w.user.phone)
+  for (const w of live) {
+    if (w.status === 'ACTIVE') byPhone.set(w.user.phone, w.user.phone)
   }
   for (const phone of byPhone.keys()) {
     try {
@@ -67,8 +74,10 @@ interface CrnGroup {
 
 async function pollAll(): Promise<void> {
   const watches = await prisma.watch.findMany({
-    where: { status: 'ACTIVE' },
-    select: { id: true, userId: true, term: true, crn: true, courseCode: true, lastSeats: true, lastAlertAt: true, user: { select: { phone: true } } },
+    // The alertCount bound is a backstop: claimAlertSlot flips spent watches to
+    // PAUSED, but this also drops any left ACTIVE by an older build or a crash.
+    where: { status: 'ACTIVE', alertCount: { lt: MAX_ALERTS_PER_WATCH } },
+    select: { id: true, userId: true, term: true, crn: true, courseCode: true, lastSeats: true, lastAlertAt: true, alertCount: true, user: { select: { phone: true } } },
   })
 
   // Dedup by (term, crn)
@@ -108,7 +117,7 @@ async function pollAll(): Promise<void> {
 
 async function pollGroup(
   group: CrnGroup,
-  allWatches: Array<{ id: string; lastSeats: number; term: string; crn: string; courseCode: string; lastAlertAt: Date | null; user: { phone: string } }>
+  allWatches: Array<{ id: string; lastSeats: number; term: string; crn: string; courseCode: string; lastAlertAt: Date | null; alertCount: number; user: { phone: string } }>
 ): Promise<void> {
   const firstWatch = allWatches.find((w) => w.term === group.term && w.crn === group.crn)
   if (!firstWatch) return
@@ -119,11 +128,19 @@ async function pollGroup(
 
   for (const w of groupWatches) {
     const { transition, seatEventId } = await applyDiff(w, section.seatsAvailable)
-    if (transition === '0_to_N' && seatEventId) {
-      const ok = await checkAlertGuards({ id: w.id, lastAlertAt: w.lastAlertAt })
-      if (ok) {
-        await scheduleSeatAlert(w.id, seatEventId)
-      }
+    const claim = await claimAlertSlot(w, section.seatsAvailable, transition)
+    if (!claim) continue
+    try {
+      await scheduleSeatAlert({
+        watchId: w.id,
+        alertNumber: claim.alertNumber,
+        seats: section.seatsAvailable,
+        seatEventId,
+      })
+    } catch (err) {
+      // The slot is already spent; hand it back so the next edge can use it.
+      await releaseAlertSlot(w.id, claim.retired)
+      throw err
     }
   }
 }
