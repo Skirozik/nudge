@@ -32,6 +32,7 @@ When reminder time hits, Nudge texts you. If you don't reply, it escalates — 5
 - **Natural language** — "remind me to submit my essay tomorrow at noon" just works.
 - **One-off reminders** — "remind me to take my meds in 20 minutes" works too.
 - **Multiple personas** — Coach, Snarky, or Anxious. Pick your vibe.
+- **Syllabus photos** — text a screenshot of your syllabus and it pulls out every due date.
 - **Web dashboard** — see your assignments, pick your persona, mark things done.
 - **OTP login** — sign in via a code Nudge texts you. No passwords.
 - **Location reminders** — "nag me when I get home to take out the trash." Uses iOS Shortcuts + geofencing. No app needed.
@@ -56,11 +57,12 @@ Nudge: Watching CSC 1301 Sec 008 (CRN 12345). I'll text you the second a seat op
 Nudge: 🚨 A seat just opened in CSC 1301 Sec 008 — go register NOW before it's gone
 ```
 
-- Polls Banner every 60–90s in surge mode, 5min normal
+- Polls Banner every 60–90s in surge mode, 5min normal, 15min overnight (1–6am)
 - Alerts fire only on 0→seat transitions (not flapping)
-- 10-min cooldown + 6/day cap per watch to prevent spam
+- 10-min cooldown between alerts, and **3 alerts per watch lifetime** — after the
+  last one the watch retires and tells you how to re-arm it
 - Up to 5 active watches per user
-- Watches auto-expire when add/drop closes
+- Watches auto-expire once `TERM_WATCH_END` passes (GSU add/drop close)
 
 ---
 
@@ -68,7 +70,7 @@ Nudge: 🚨 A seat just opened in CSC 1301 Sec 008 — go register NOW before it
 
 | Layer | Tech |
 |---|---|
-| Frontend / API | Next.js 14 (App Router), Vercel |
+| Frontend / API | Next.js 15 (App Router), Vercel |
 | Database | Neon (serverless Postgres) + Prisma |
 | Job queue | BullMQ + Upstash Redis |
 | iMessage bridge | BlueBubbles |
@@ -145,14 +147,19 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Session signing
 SESSION_SECRET=generate_another_random_string_here
 
-# App URL (used for location reminder webhook URLs)
-NEXT_PUBLIC_APP_URL=https://yourdomain.com
+# App URL (dashboard links + location reminder webhook URLs)
+APP_URL=https://yourdomain.com
 
 # Admin iMessage address (for admin commands: stats, surge on/off, broadcast)
 ADMIN_PHONE=+1XXXXXXXXXX
 
-# SeatSnipe: date to expire all watches (GSU add/drop end)
-TERM_WATCH_END=2026-08-28
+# SeatSnipe: when all watches expire (GSU add/drop end). Bump this each term —
+# once it passes, every watch is swept to EXPIRED on the next poll.
+TERM_WATCH_END=2026-08-28T21:00:00Z
+
+# SeatSnipe tuning (optional — defaults shown)
+MAX_WATCHES_PER_USER=5
+MAX_ALERTS_PER_WATCH=3
 ```
 
 ### 3. Run migrations
@@ -206,18 +213,47 @@ nudge/
 │   │   ├── banner.ts              # GSU Banner API client (seat data)
 │   │   ├── bluebubbles.ts         # iMessage send + typing indicator
 │   │   ├── locationToken.ts       # Per-user webhook token provisioning
+│   │   ├── outage.ts              # BlueBubbles outage detect + auto-recovery
 │   │   ├── phone.ts               # Phone number normalization
+│   │   ├── prisma.ts              # Prisma client (pg adapter)
 │   │   ├── queue.ts               # BullMQ job scheduling
+│   │   ├── redis.ts               # Redis client + surge-mode flag
 │   │   ├── session.ts             # JWT auth helpers
 │   │   ├── timezone.ts            # Timezone resolution
+│   │   ├── visionParser.ts        # Syllabus screenshot → assignments
 │   │   ├── watcher.ts             # SeatSnipe polling loop
-│   │   └── watches.ts             # Watch CRUD + diff logic
+│   │   └── watches.ts             # Watch CRUD, diff logic, alert slots
 │   ├── worker/
 │   │   └── index.ts               # BullMQ worker + SeatSnipe watcher entry
 │   └── middleware.ts              # Route protection
+├── scripts/                       # One-off ops + backfill scripts
 ├── ecosystem.config.cjs           # PM2 config
 └── vitest.config.ts               # Unit tests (Vitest)
 ```
+
+---
+
+## Keywords
+
+Anyone can text these — they're matched before the AI agent sees the message.
+
+| Keyword | What it does |
+|---|---|
+| `STOP` | Opt out. Also accepts `UNSUBSCRIBE`, `END`, `QUIT`, `CANCEL`, `STOPALL`, `REVOKE`, `OPTOUT`. Silent, per carrier convention. |
+| `START` | Opt back in. |
+| `DASHBOARD` | Texts you a link to your dashboard. |
+
+---
+
+## Background behavior
+
+- **Monday check-in** — 9am Eastern, a nudge to anyone with no open assignments
+  who hasn't texted in 5 days. Skips anyone already messaged in the last 12h, so a
+  re-run can't double-text.
+- **Outage detection** — if BlueBubbles stops responding, the worker marks an
+  outage and sends a catch-up message once it's back.
+- **Watcher dead-man switch** — if the SeatSnipe loop goes quiet for too long,
+  `ADMIN_PHONE` gets an alert.
 
 ---
 
