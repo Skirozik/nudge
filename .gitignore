@@ -48,3 +48,13 @@ next-env.d.ts
 
 .vercel
 .env*
+
+# one-off scripts holding real user data — this repo is public
+scripts/fulfill-econ.ts
+
+# machine-specific launcher (absolute pm2 path)
+start-worker.bat
+
+# tool scratch
+.eslint-tsonly.tmp.mjs
+.tmp.driveupload/
