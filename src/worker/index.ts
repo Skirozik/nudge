@@ -34,6 +34,13 @@ const NAG_ESCALATION = [
   "Final text. Make it count. Full drama queen. This is your last one and you want them to FEEL that.",
 ]
 
+// Hoisted so the dedup guard matches the exact string we send — if the two
+// ever drift apart the guard silently stops working and the whole list gets
+// texted once per job re-delivery.
+const MONDAY_CHECKIN_BODY = "new week, what's on your plate? 📚"
+// Comfortably longer than any single run, far shorter than the weekly cadence.
+const CHECKIN_DEDUP_MS = 12 * 60 * 60 * 1000
+
 async function appendToConversation(userId: string, message: string): Promise<void> {
   const existing = await prisma.conversation.findUnique({ where: { userId } })
   const messages = [...((existing?.messages ?? []) as object[]), { role: 'assistant', content: message }]
@@ -605,24 +612,57 @@ const worker = new Worker(
         where: {
           optedOut: false,
           assignments: { none: { status: 'open' } },
-          messages: { none: { direction: 'in', createdAt: { gt: fiveDaysAgo } } },
+          AND: [
+            { messages: { none: { direction: 'in', createdAt: { gt: fiveDaysAgo } } } },
+            // Re-delivery guard, coarse pass. See the per-user re-check below.
+            {
+              messages: {
+                none: {
+                  direction: 'out',
+                  body: MONDAY_CHECKIN_BODY,
+                  createdAt: { gt: new Date(Date.now() - CHECKIN_DEDUP_MS) },
+                },
+              },
+            },
+          ],
         },
         include: { _count: { select: { messages: true } } },
       })
 
+      let sent = 0
       for (const user of users) {
         if (user._count.messages === 0) continue
         try {
-          const msg = "new week, what's on your plate? 📚"
-          await sendMessage(user.phone, msg)
-          await prisma.message.create({ data: { userId: user.id, direction: 'out', body: msg } })
-          await appendToConversation(user.id, msg)
+          // Re-checked per user, immediately before sending, because the bulk
+          // query above is only a snapshot. This worker runs with skipLockRenewal
+          // and a 60s stalledInterval while this loop paces 300ms per user, so a
+          // full run outlives its own lock and is re-delivered as stalled. That
+          // re-delivery restarts from the top, and its snapshot still lists
+          // everyone the first pass has not reached yet. Hence the whole list
+          // getting texted 4x on 2026-09-08 and 2x on 2026-09-22.
+          const dupe = await prisma.message.findFirst({
+            where: {
+              userId: user.id,
+              direction: 'out',
+              body: MONDAY_CHECKIN_BODY,
+              createdAt: { gt: new Date(Date.now() - CHECKIN_DEDUP_MS) },
+            },
+            select: { id: true },
+          })
+          if (dupe) continue
+
+          await sendMessage(user.phone, MONDAY_CHECKIN_BODY)
+          await prisma.message.create({
+            data: { userId: user.id, direction: 'out', body: MONDAY_CHECKIN_BODY },
+          })
+          await appendToConversation(user.id, MONDAY_CHECKIN_BODY)
+          sent++
         } catch (err) {
           console.error(`[worker] Monday check-in failed for user ${user.id}:`, err)
         }
         await new Promise((r) => setTimeout(r, 300))
       }
-      console.log(`[worker] Monday check-in sent to ${users.filter(u => u._count.messages > 0).length} users`)
+      console.log(`[worker] Monday check-in sent to ${sent} users (${users.length} candidates)`)
       return
     }
 
