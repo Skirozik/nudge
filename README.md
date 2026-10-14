@@ -8,6 +8,12 @@
 
 Nudge is a self-hosted AI assistant that texts you on iMessage. Tell it what's due, and it'll hound you until you do it — built for people with real ADHD and GSU students trying to snipe open course seats.
 
+<p align="center">
+  <a href="docs/brag.mp4"><img src="docs/brag.jpg" width="720" alt="Nudge launch video: click to play" /></a>
+  <br />
+  <sub>▶ Click to watch the 22-second launch video</sub>
+</p>
+
 ---
 
 ## What it does
