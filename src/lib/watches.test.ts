@@ -15,7 +15,7 @@ import { prisma } from './prisma'
 const mockSeatEventCreate = prisma.seatEvent.create as ReturnType<typeof vi.fn>
 const mockWatchUpdate = prisma.watch.update as ReturnType<typeof vi.fn>
 
-const baseWatch = { id: 'w1', term: '202608', crn: '12345', lastSeats: 0 }
+const baseWatch = { id: 'w1', school: 'gsu', term: '202608', crn: '12345', lastSeats: 0 }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -31,7 +31,7 @@ describe('applyDiff', () => {
 
     expect(mockSeatEventCreate).toHaveBeenCalledOnce()
     expect(mockSeatEventCreate).toHaveBeenCalledWith({
-      data: { term: '202608', crn: '12345', seatsFrom: 0, seatsTo: 3 },
+      data: { school: 'gsu', term: '202608', crn: '12345', seatsFrom: 0, seatsTo: 3 },
     })
     expect(result.transition).toBe('0_to_N')
     expect(result.seatEventId).toBe('evt1')

@@ -16,6 +16,11 @@ model User {
   optedOut          Boolean            @default(false)
   source            String?
   locationToken     String?            @unique
+  // SeatSnipe: school id from src/lib/schools (null until the student picks one)
+  school            String?
+  // A watch request sent before the student picked a school; replayed once they do
+  pendingWatchQuery String?
+  pendingWatchAt    DateTime?
   assignments       Assignment[]
   conversation      Conversation?
   messages          Message[]
@@ -146,6 +151,7 @@ model Watch {
   id            String      @id @default(cuid())
   userId        String
   user          User        @relation(fields: [userId], references: [id])
+  school        String      @default("gsu")
   term          String
   crn           String
   courseCode    String
@@ -158,11 +164,12 @@ model Watch {
   source        String?
   createdAt     DateTime    @default(now())
 
-  @@unique([userId, term, crn])
+  @@unique([userId, school, term, crn])
 }
 
 model SeatEvent {
   id         String   @id @default(cuid())
+  school     String   @default("gsu")
   term       String
   crn        String
   seatsFrom  Int

@@ -6,10 +6,11 @@ import { sendMessage } from '../lib/bluebubbles'
 import { runAgent } from '../lib/agent'
 import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleSeatAlert } from '../lib/queue'
 import { normalizePhone } from '../lib/phone'
-import { startWatcherLoop } from '../lib/watcher'
+import { startWatcherLoop, sectionKey } from '../lib/watcher'
 import { startOutageMonitor, handleServerFailure, markOutage } from '../lib/outage'
 import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH } from '../lib/watches'
-import { searchByCrn } from '../lib/banner'
+import { bannerFor } from '../lib/banner'
+import { getSchool, getLiveSchool, liveSchools } from '../lib/schools'
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
 
@@ -346,13 +347,15 @@ async function recoverOnStartup(): Promise<void> {
     console.log(`[worker] Recovery: ${staleWatches.length} stale watch(es) to check`)
     const seen = new Set<string>()
     for (const w of staleWatches) {
-      const key = `${w.term}:${w.crn}`
+      const key = sectionKey(w)
       if (seen.has(key)) continue
       seen.add(key)
+      // A school switched off since the watch was made is skipped, not polled
+      if (!getLiveSchool(w.school)) continue
       try {
-        const section = await searchByCrn(w.term, w.crn, w.courseCode)
+        const section = await bannerFor(w.school).searchByCrn(w.term, w.crn, w.courseCode)
         if (!section) continue
-        const groupWatches = staleWatches.filter((sw) => sw.term === w.term && sw.crn === w.crn)
+        const groupWatches = staleWatches.filter((sw) => sectionKey(sw) === key)
         for (const gw of groupWatches) {
           const { transition, seatEventId } = await applyDiff(gw, section.seatsAvailable)
           // Same claim as the normal poll path, so recovery can't double-alert.
@@ -585,7 +588,9 @@ const worker = new Worker(
       const tail = isFinal
         ? ` (that's ${alertNumber} of ${MAX_ALERTS_PER_WATCH} — this watch is done. text "watch ${watch.courseCode} ${watch.crn}" to turn it back on.)`
         : ''
-      const msg = `🚨 Seat opened in ${courseLabel} — ${seats} seat${seats === 1 ? '' : 's'} available! Register at gosolar.gsu.edu before it fills up.${tail}`
+      const registerSite = getSchool(watch.school)?.banner?.registerSite
+      const registerHint = registerSite ? `Register at ${registerSite} before it fills up.` : 'Register before it fills up.'
+      const msg = `🚨 Seat opened in ${courseLabel} — ${seats} seat${seats === 1 ? '' : 's'} available! ${registerHint}${tail}`
 
       // alertCount/lastAlertAt were already written by claimAlertSlot.
       await sendMessage(watch.user.phone, msg)
@@ -702,21 +707,24 @@ function startWatcherDeadMan(): void {
   const adminPhone = process.env.ADMIN_PHONE ? normalizePhone(process.env.ADMIN_PHONE) : null
   if (!adminPhone) return
 
+  // Each school has its own loop, so each gets its own silence check
   setInterval(async () => {
-    try {
-      const last = await prisma.metricEvent.findFirst({
-        where: { kind: 'poller_heartbeat' },
-        orderBy: { createdAt: 'desc' },
-      })
-      if (!last) return
-      const gap = Date.now() - last.createdAt.getTime()
-      if (gap > STALE_THRESHOLD_MS) {
-        const mins = Math.round(gap / 60_000)
-        console.error(`[worker] dead-man: no watcher heartbeat for ${mins}min`)
-        await sendMessage(adminPhone, `⚠️ SeatSnipe watcher has been silent for ${mins} minutes — check PM2`)
+    for (const school of liveSchools()) {
+      try {
+        const last = await prisma.metricEvent.findFirst({
+          where: { kind: 'poller_heartbeat', meta: { path: ['school'], equals: school.id } },
+          orderBy: { createdAt: 'desc' },
+        })
+        if (!last) continue
+        const gap = Date.now() - last.createdAt.getTime()
+        if (gap > STALE_THRESHOLD_MS) {
+          const mins = Math.round(gap / 60_000)
+          console.error(`[worker] dead-man: no ${school.id} watcher heartbeat for ${mins}min`)
+          await sendMessage(adminPhone, `⚠️ SeatSnipe watcher for ${school.shortName} has been silent for ${mins} minutes — check PM2`)
+        }
+      } catch {
+        // don't crash the process if the dead-man check itself fails
       }
-    } catch {
-      // don't crash the process if the dead-man check itself fails
     }
   }, CHECK_INTERVAL_MS)
 }

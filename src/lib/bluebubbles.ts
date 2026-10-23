@@ -1,4 +1,9 @@
+// MESSAGING_MODE=console prints texts to the terminal instead of sending them,
+// so the app runs locally without BlueBubbles, a Mac, or real phone numbers.
+const consoleMode = () => process.env.MESSAGING_MODE === 'console'
+
 export async function sendTypingIndicator(phone: string): Promise<void> {
+  if (consoleMode()) return
   const url = process.env.BLUEBUBBLES_URL
   const password = process.env.BLUEBUBBLES_PASSWORD
   if (!url || !password) return
@@ -13,6 +18,7 @@ export async function sendTypingIndicator(phone: string): Promise<void> {
 export async function downloadAttachment(
   guid: string
 ): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  if (consoleMode()) return null // photos aren't simulated
   const url = process.env.BLUEBUBBLES_URL
   const password = process.env.BLUEBUBBLES_PASSWORD
   if (!url || !password) return null
@@ -28,6 +34,10 @@ export async function downloadAttachment(
 }
 
 export async function sendMessage(phone: string, text: string): Promise<void> {
+  if (consoleMode()) {
+    console.log(`\n📱 to ${phone}:\n${text}\n`)
+    return
+  }
   const url = process.env.BLUEBUBBLES_URL
   const password = process.env.BLUEBUBBLES_PASSWORD
   const method = process.env.BLUEBUBBLES_METHOD ?? 'apple-script'

@@ -1,0 +1,7 @@
+# Code owners are asked to review pull requests that touch their files.
+# Zach reviews everything by default.
+* @Skirozik
+
+# Georgia Tech integration. Once she joins, add her GitHub username after
+# Zach's so she's asked to review changes to it too, e.g.:
+# src/lib/schools/gatech.ts @Skirozik @her-github-username
