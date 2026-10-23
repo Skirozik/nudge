@@ -293,4 +293,6 @@ Change yours anytime in the dashboard or just tell Nudge.
 
 ## License
 
-MIT
+Copyright © 2026 Skirozik. All rights reserved.
+
+This code is public so you can read it. It is not licensed for reuse, modification or redistribution without written permission.
