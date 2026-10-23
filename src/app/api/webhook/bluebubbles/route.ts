@@ -7,6 +7,7 @@ import { normalizePhone } from '@/lib/phone'
 import { redis, setSurgeMode } from '@/lib/redis'
 import { scheduleBroadcast } from '@/lib/queue'
 import { handleServerFailure, clearNotified } from '@/lib/outage'
+import { isLive, resolveSchool, SCHOOLS } from '@/lib/schools'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -235,20 +236,37 @@ export async function POST(req: NextRequest) {
         prisma.metricEvent.count({ where: { kind: 'alert_sent', createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } }),
         prisma.metricEvent.count({ where: { kind: 'seat_caught' } }),
       ])
-      const stats = `Users: ${userCount}\nActive watches: ${watchCount}\nAlerts (24h): ${alertCount}\nSeats caught (all time): ${seatCaughtCount}`
+      // Schools students asked for that aren't live yet
+      const requests = await prisma.metricEvent.findMany({
+        where: { kind: 'school_requested' },
+        select: { meta: true },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+      })
+      const demand = new Map<string, number>()
+      for (const r of requests) {
+        const meta = r.meta as { said?: string; schoolId?: string | null } | null
+        const name = (meta?.schoolId ?? meta?.said ?? 'unknown').toLowerCase()
+        demand.set(name, (demand.get(name) ?? 0) + 1)
+      }
+      const topDemand = [...demand].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name, n]) => `${name} ${n}`).join(', ')
+      const stats = `Users: ${userCount}\nActive watches: ${watchCount}\nAlerts (24h): ${alertCount}\nSeats caught (all time): ${seatCaughtCount}${topDemand ? `\nSchool requests: ${topDemand}` : ''}`
       await sendMessage(normalizedPhone, stats)
       return NextResponse.json({ ok: true })
     }
 
-    if (cmd === 'SURGE ON') {
-      await setSurgeMode(true)
-      await sendMessage(normalizedPhone, 'surge on — polling every ~75s')
-      return NextResponse.json({ ok: true })
-    }
-
-    if (cmd === 'SURGE OFF') {
-      await setSurgeMode(false)
-      await sendMessage(normalizedPhone, 'surge off — polling every 5min')
+    // SURGE ON / SURGE OFF for every school, or SURGE ON GT for one
+    const surge = cmd.match(/^SURGE (ON|OFF)(?:\s+(.+))?$/)
+    if (surge) {
+      const on = surge[1] === 'ON'
+      const target = surge[2] ? resolveSchool(surge[2]) : undefined
+      if (surge[2] && !isLive(target)) {
+        await sendMessage(normalizedPhone, `no live school called "${surge[2].toLowerCase()}"`)
+        return NextResponse.json({ ok: true })
+      }
+      await setSurgeMode(on, target?.id, SCHOOLS.map((sc) => sc.id))
+      const where = target ? ` for ${target.shortName}` : ''
+      await sendMessage(normalizedPhone, on ? `surge on${where} — polling every ~75s` : `surge off${where} — polling every 5min`)
       return NextResponse.json({ ok: true })
     }
 

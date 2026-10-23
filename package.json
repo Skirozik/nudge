@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "worker": "tsx src/worker/index.ts",
+    "test": "vitest run",
+    "text": "node scripts/text.mjs",
     "postinstall": "prisma generate"
   },
   "dependencies": {

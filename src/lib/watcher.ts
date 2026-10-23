@@ -1,10 +1,10 @@
 import { prisma } from './prisma'
-import { searchByCrn } from './banner'
+import { bannerFor } from './banner'
 import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH } from './watches'
 import { scheduleSeatAlert } from './queue'
 import { isSurgeMode } from './redis'
+import { liveSchools, termWatchEnd, type LiveSchool } from './schools'
 
-const TERM_WATCH_END = process.env.TERM_WATCH_END ? new Date(process.env.TERM_WATCH_END) : null
 const OVERNIGHT_START = 1  // 1am local
 const OVERNIGHT_END   = 6  // 6am local
 
@@ -16,8 +16,6 @@ const CIRCUIT_THRESHOLD = 5
 const CIRCUIT_PAUSE_MS  = 10 * 60_000  // 10 min
 const CONCURRENCY = 3
 
-let consecutiveErrors = 0
-
 function jitter(ms: number): number {
   return Math.floor(ms * (0.85 + Math.random() * 0.3))
 }
@@ -27,38 +25,46 @@ function isOvernight(): boolean {
   return hour >= OVERNIGHT_START && hour < OVERNIGHT_END
 }
 
-async function getInterval(): Promise<number> {
+async function getInterval(schoolId: string): Promise<number> {
   if (isOvernight()) return jitter(OVERNIGHT_MS)
-  if (await isSurgeMode()) return jitter(SURGE_MS)
+  if (await isSurgeMode(schoolId)) return jitter(SURGE_MS)
   return jitter(NORMAL_MS)
 }
 
-async function expireWatches(sendMessage: (phone: string, msg: string) => Promise<void>): Promise<void> {
+/** Watches for one section share a single Banner request. */
+export function sectionKey(w: { school: string; term: string; crn: string }): string {
+  return `${w.school}:${w.term}:${w.crn}`
+}
+
+async function expireWatches(
+  school: LiveSchool,
+  sendMessage: (phone: string, msg: string) => Promise<void>
+): Promise<void> {
   // PAUSED watches have spent their alert budget and are no longer polled, but
   // they still show in list_watches — sweep them too so none linger past the term.
   const live = await prisma.watch.findMany({
-    where: { status: { in: ['ACTIVE', 'PAUSED'] } },
+    where: { school: school.id, status: { in: ['ACTIVE', 'PAUSED'] } },
     include: { user: { select: { phone: true } } },
   })
   if (!live.length) return
 
   await prisma.watch.updateMany({
-    where: { status: { in: ['ACTIVE', 'PAUSED'] } },
+    where: { school: school.id, status: { in: ['ACTIVE', 'PAUSED'] } },
     data: { status: 'EXPIRED' },
   })
-  await logMetric('watches_expired', null, { count: live.length })
+  await logMetric('watches_expired', null, { count: live.length, school: school.id })
 
   // Only users with a still-running watch get the text; a retired one already
   // got a final alert saying it was done.
-  const byPhone = new Map<string, string>()
+  const phones = new Set<string>()
   for (const w of live) {
-    if (w.status === 'ACTIVE') byPhone.set(w.user.phone, w.user.phone)
+    if (w.status === 'ACTIVE') phones.add(w.user.phone)
   }
-  for (const phone of byPhone.keys()) {
+  for (const phone of phones) {
     try {
       await sendMessage(
         phone,
-        "Registration's closed — your watches have been cleared. Good luck this semester! 🎓"
+        `Registration's closed at ${school.shortName} — your watches there have been cleared. Good luck this semester! 🎓`
       )
     } catch {
       // Best-effort; don't block expiry on a failed text
@@ -72,18 +78,35 @@ interface CrnGroup {
   watchIds: string[]
 }
 
-async function pollAll(): Promise<void> {
+type PolledWatch = {
+  id: string
+  lastSeats: number
+  school: string
+  term: string
+  crn: string
+  courseCode: string
+  lastAlertAt: Date | null
+  alertCount: number
+  user: { phone: string }
+}
+
+/** Per-school loop state. */
+interface LoopState {
+  consecutiveErrors: number
+}
+
+async function pollAll(school: LiveSchool, state: LoopState): Promise<void> {
   const watches = await prisma.watch.findMany({
     // The alertCount bound is a backstop: claimAlertSlot flips spent watches to
     // PAUSED, but this also drops any left ACTIVE by an older build or a crash.
-    where: { status: 'ACTIVE', alertCount: { lt: MAX_ALERTS_PER_WATCH } },
-    select: { id: true, userId: true, term: true, crn: true, courseCode: true, lastSeats: true, lastAlertAt: true, alertCount: true, user: { select: { phone: true } } },
+    where: { school: school.id, status: 'ACTIVE', alertCount: { lt: MAX_ALERTS_PER_WATCH } },
+    select: { id: true, userId: true, school: true, term: true, crn: true, courseCode: true, lastSeats: true, lastAlertAt: true, alertCount: true, user: { select: { phone: true } } },
   })
 
-  // Dedup by (term, crn)
+  // Dedup by section
   const groups = new Map<string, CrnGroup>()
   for (const w of watches) {
-    const key = `${w.term}:${w.crn}`
+    const key = sectionKey(w)
     if (!groups.has(key)) groups.set(key, { term: w.term, crn: w.crn, watchIds: [] })
     groups.get(key)!.watchIds.push(w.id)
   }
@@ -97,9 +120,9 @@ async function pollAll(): Promise<void> {
       while (inFlight < CONCURRENCY && qi < queue.length) {
         const group = queue[qi++]
         inFlight++
-        pollGroup(group, watches)
-          .then(() => { consecutiveErrors = 0 })
-          .catch(() => { consecutiveErrors++ })
+        pollGroup(school, group, watches)
+          .then(() => { state.consecutiveErrors = 0 })
+          .catch(() => { state.consecutiveErrors++ })
           .finally(() => {
             inFlight--
             if (qi < queue.length) {
@@ -115,16 +138,12 @@ async function pollAll(): Promise<void> {
   })
 }
 
-async function pollGroup(
-  group: CrnGroup,
-  allWatches: Array<{ id: string; lastSeats: number; term: string; crn: string; courseCode: string; lastAlertAt: Date | null; alertCount: number; user: { phone: string } }>
-): Promise<void> {
-  const firstWatch = allWatches.find((w) => w.term === group.term && w.crn === group.crn)
-  if (!firstWatch) return
-  const section = await searchByCrn(group.term, group.crn, firstWatch.courseCode)
-  if (!section) throw new Error(`[watcher] searchByCrn returned null for ${group.crn}`)
-
+async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches: PolledWatch[]): Promise<void> {
   const groupWatches = allWatches.filter((w) => w.term === group.term && w.crn === group.crn)
+  const firstWatch = groupWatches[0]
+  if (!firstWatch) return
+  const section = await bannerFor(school.id).searchByCrn(group.term, group.crn, firstWatch.courseCode)
+  if (!section) throw new Error(`[watcher:${school.id}] searchByCrn returned null for ${group.crn}`)
 
   for (const w of groupWatches) {
     const { transition, seatEventId } = await applyDiff(w, section.seatsAvailable)
@@ -145,41 +164,44 @@ async function pollGroup(
   }
 }
 
-export function startWatcherLoop(
+function startSchoolLoop(
+  school: LiveSchool,
   sendMessage: (phone: string, msg: string) => Promise<void>
 ): void {
-  const running = true
+  const state: LoopState = { consecutiveErrors: 0 }
+  const tag = `[watcher:${school.id}]`
 
   async function loop(): Promise<void> {
-    while (running) {
+    while (true) {
       // Check auto-expiry
-      if (TERM_WATCH_END && Date.now() > TERM_WATCH_END.getTime()) {
+      const termEnd = termWatchEnd(school)
+      if (termEnd && Date.now() > termEnd.getTime()) {
         try {
-          await expireWatches(sendMessage)
+          await expireWatches(school, sendMessage)
         } catch (err) {
-          console.error('[watcher] expiry error:', err)
+          console.error(`${tag} expiry error:`, err)
         }
       }
 
       // Circuit breaker
-      if (consecutiveErrors >= CIRCUIT_THRESHOLD) {
-        console.error(`[watcher] circuit open after ${consecutiveErrors} errors — pausing ${CIRCUIT_PAUSE_MS / 60000}min`)
-        try { await logMetric('watcher_circuit_open', null, { consecutiveErrors }) } catch {}
-        consecutiveErrors = 0
+      if (state.consecutiveErrors >= CIRCUIT_THRESHOLD) {
+        console.error(`${tag} circuit open after ${state.consecutiveErrors} errors — pausing ${CIRCUIT_PAUSE_MS / 60000}min`)
+        try { await logMetric('watcher_circuit_open', null, { consecutiveErrors: state.consecutiveErrors, school: school.id }) } catch {}
+        state.consecutiveErrors = 0
         await sleep(CIRCUIT_PAUSE_MS)
         continue
       }
 
       try {
-        await pollAll()
+        await pollAll(school, state)
       } catch (err) {
-        console.error('[watcher] poll error:', err)
-        consecutiveErrors++
+        console.error(`${tag} poll error:`, err)
+        state.consecutiveErrors++
       }
 
-      try { await logMetric('poller_heartbeat', null, { consecutiveErrors }) } catch {}
+      try { await logMetric('poller_heartbeat', null, { consecutiveErrors: state.consecutiveErrors, school: school.id }) } catch {}
 
-      const interval = await getInterval().catch(() => jitter(NORMAL_MS))
+      const interval = await getInterval(school.id).catch(() => jitter(NORMAL_MS))
       await sleep(interval)
     }
   }
@@ -189,13 +211,26 @@ export function startWatcherLoop(
       try {
         await loop()
       } catch (err) {
-        console.error('[watcher] fatal loop error — restarting in 60s:', err)
+        console.error(`${tag} fatal loop error — restarting in 60s:`, err)
         await sleep(60_000)
       }
     }
   }
 
   supervise()
+}
+
+/** One independent polling loop per live school. */
+export function startWatcherLoop(sendMessage: (phone: string, msg: string) => Promise<void>): void {
+  const schools = liveSchools()
+  if (!schools.length) {
+    console.warn('[watcher] no live schools — check ENABLED_SCHOOLS')
+    return
+  }
+  for (const school of schools) {
+    console.log(`[watcher] starting loop for ${school.shortName}`)
+    startSchoolLoop(school, sendMessage)
+  }
 }
 
 function sleep(ms: number): Promise<void> {

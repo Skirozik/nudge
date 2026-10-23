@@ -10,6 +10,7 @@ const ALERT_COOLDOWN_MS = 10 * 60 * 1000
 export interface WatchRow {
   id: string
   userId: string
+  school: string
   term: string
   crn: string
   courseCode: string
@@ -25,6 +26,7 @@ export interface WatchRow {
 
 export async function createWatch(params: {
   userId: string
+  school: string
   term: string
   crn: string
   courseCode: string
@@ -42,9 +44,11 @@ export async function createWatch(params: {
     }
   }
 
-  // Reactivate if an existing cancelled/expired watch for the same (user, term, crn)
+  // Reactivate if an existing cancelled/expired watch for the same (user, school, term, crn)
   const existing = await prisma.watch.findUnique({
-    where: { userId_term_crn: { userId: params.userId, term: params.term, crn: params.crn } },
+    where: {
+      userId_school_term_crn: { userId: params.userId, school: params.school, term: params.term, crn: params.crn },
+    },
   })
   if (existing) {
     if (existing.status === 'ACTIVE') {
@@ -54,13 +58,14 @@ export async function createWatch(params: {
       where: { id: existing.id },
       data: { status: 'ACTIVE', lastSeats: params.initialSeats ?? 0, alertCount: 0, lastAlertAt: null, lastCheckedAt: null },
     })
-    await logMetric('watch_created', params.userId, { crn: params.crn, courseCode: params.courseCode })
+    await logMetric('watch_created', params.userId, { crn: params.crn, courseCode: params.courseCode, school: params.school })
     return { watch: watch as WatchRow }
   }
 
   const watch = await prisma.watch.create({
     data: {
       userId: params.userId,
+      school: params.school,
       term: params.term,
       crn: params.crn,
       courseCode: params.courseCode,
@@ -69,7 +74,7 @@ export async function createWatch(params: {
       lastSeats: params.initialSeats ?? 0,
     },
   })
-  await logMetric('watch_created', params.userId, { crn: params.crn, courseCode: params.courseCode })
+  await logMetric('watch_created', params.userId, { crn: params.crn, courseCode: params.courseCode, school: params.school })
   return { watch: watch as WatchRow }
 }
 
@@ -129,7 +134,7 @@ export interface DiffResult {
 }
 
 export async function applyDiff(
-  watch: { id: string; lastSeats: number; term: string; crn: string },
+  watch: { id: string; lastSeats: number; school: string; term: string; crn: string },
   newSeats: number
 ): Promise<DiffResult> {
   // Only record an event when something changed — writing one per watch per poll
@@ -137,7 +142,7 @@ export async function applyDiff(
   let seatEventId: string | null = null
   if (newSeats !== watch.lastSeats) {
     const event = await prisma.seatEvent.create({
-      data: { term: watch.term, crn: watch.crn, seatsFrom: watch.lastSeats, seatsTo: newSeats },
+      data: { school: watch.school, term: watch.term, crn: watch.crn, seatsFrom: watch.lastSeats, seatsTo: newSeats },
     })
     seatEventId = event.id
   }

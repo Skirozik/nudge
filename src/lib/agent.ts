@@ -2,8 +2,9 @@ import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from './prisma'
 import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleCheckIn, scheduleFollowUp } from './queue'
 import { resolveTimezone, parseInTimezone } from './timezone'
-import { createWatch, listWatches, cancelWatch } from './watches'
-import { searchByCourse, getCurrentTerm } from './banner'
+import { listWatches, cancelWatch } from './watches'
+import { watchCourse, setSchool } from './seatsnipeTools'
+import { getSchool, liveSchools } from './schools'
 import { getOrCreateLocationToken } from './locationToken'
 
 const client = new Anthropic()
@@ -132,7 +133,7 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: 'watch_course',
     description:
-      'Set up a seat alert for a GSU course. If given a CRN (digits only), look it up and create the watch immediately. If given a course code like "CSCI 3350", fetch all sections and return them so the user can pick one (present as a numbered list, then call this tool again with the chosen CRN). Never guess a CRN.',
+      "Set up a seat alert for a course at the student's school. Given a course code like \"CSCI 3350\", fetch all sections and return them so the user can pick one (present as a numbered list, then call this tool again with the course code and the chosen CRN). Never guess a CRN. Returns needsSchool=true if the student hasn't picked a school yet.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -142,10 +143,22 @@ const TOOLS: Anthropic.Tool[] = [
         },
         term: {
           type: 'string',
-          description: 'GSU term code in YYYYMM format (e.g. "202608"). Omit to use the current term.',
+          description: 'Term code in YYYYMM format (e.g. "202608"). Omit to use the current term.',
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'set_school',
+    description:
+      'Save which school the student goes to for SeatSnipe, the first time or when they switch. Pass the school the way they said it, e.g. "Georgia State" or "Georgia Tech". Returns comingSoon=true for schools SeatSnipe does not support yet. If they asked for a watch before picking, the result includes savedRequestResult.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        school: { type: 'string', description: 'The school as the student named it' },
+      },
+      required: ['school'],
     },
   },
   {
@@ -333,66 +346,17 @@ async function executeTool(
       return { success: true, timezone: iana }
     }
 
-    case 'watch_course': {
-      const { query, term } = input as { query: string; term?: string }
-      const activeTerm = term ?? await getCurrentTerm()
-      const parts = query.trim().split(/\s+/)
+    case 'watch_course':
+      return watchCourse(userId, input as { query: string; term?: string })
 
-      // Require at least subject + courseNumber ("CSC 1301L")
-      // Optional third token is the CRN ("CSC 1301L 90474") — creates watch directly
-      if (parts.length < 2) {
-        return { error: 'Provide a course code like "CSC 1301L" or "CSC 1301L 90474" to watch a specific section.' }
-      }
-
-      const [rawSubject, courseNumber, ...rest] = parts
-      const subject = rawSubject.toUpperCase() === 'CSCI' ? 'CSC' : rawSubject.toUpperCase()
-      const specificCrn = rest.find((p) => /^\d+$/.test(p)) ?? null
-
-      const sections = await searchByCourse(activeTerm, subject, courseNumber.toUpperCase())
-      if (!sections.length) {
-        return { sections: [], message: `No sections found for ${subject} ${courseNumber.toUpperCase()} this term.` }
-      }
-
-      if (specificCrn) {
-        const section = sections.find((s) => s.crn === specificCrn)
-        if (!section) {
-          return { error: `CRN ${specificCrn} not found in ${subject} ${courseNumber.toUpperCase()} sections.` }
-        }
-        const userRow = await prisma.user.findUnique({ where: { id: userId }, select: { source: true } })
-        const result = await createWatch({
-          userId,
-          term: activeTerm,
-          crn: specificCrn,
-          courseCode: section.courseCode,
-          sectionLabel: section.sectionLabel,
-          source: userRow?.source ?? null,
-          initialSeats: section.seatsAvailable,
-        })
-        if (result.error) return { error: result.error }
-        return {
-          success: true,
-          crn: section.crn,
-          courseCode: section.courseCode,
-          sectionLabel: section.sectionLabel,
-          seatsAvailable: section.seatsAvailable,
-        }
-      }
-
-      // No CRN specified — return section list for user to pick
-      return {
-        sections: sections.map((s, i) => ({
-          index: i + 1,
-          crn: s.crn,
-          label: s.sectionLabel,
-          seats: s.seatsAvailable,
-        })),
-      }
-    }
+    case 'set_school':
+      return setSchool(userId, input as { school: string })
 
     case 'list_watches': {
       const watches = await listWatches(userId)
       return {
         watches: watches.map((w) => ({
+          school: getSchool(w.school)?.shortName ?? w.school,
           crn: w.crn,
           courseCode: w.courseCode,
           sectionLabel: w.sectionLabel,
@@ -537,9 +501,12 @@ ${opts?.lateReply ? '- LATE REPLY: The server was briefly offline and this messa
 - CRITICAL — tool time format: when calling any tool with due_at or fire_at, ALWAYS use offset-aware ISO 8601: YYYY-MM-DDTHH:MM:SS${tzOffsetStr}. NEVER use Z suffix (that means UTC and will schedule at the wrong local time). Example: if user says "11:59 PM tonight", use ${localDateStr}T23:59:00${tzOffsetStr}
 
 SEAT WATCH RULES:
+- SeatSnipe is live at: ${liveSchools().map((sc) => sc.name).join(', ')}. A student has to pick their school before their first watch.
+- If watch_course returns needsSchool=true, send its message as written, then ask which school they go to and name the live schools. Their request is saved, so they don't need to send it again.
+- When they name a school, call set_school with what they said. If it returns comingSoon=true, send its message as written and don't offer a watch. If it returns savedRequestResult, continue with that result as if they had just asked (show the sections or confirm the watch).
+- Students can switch schools any time by telling you; call set_school. Their existing watches keep running and only new watches use the new school.
 - To show sections: call watch_course with "SUBJECT COURSENUMBER" e.g. "CSC 1301L". Reply with a numbered list showing CRN, seats, and schedule. Example: "1. CRN 90474, Sec 010 MWF 9–9:50, Jones (5 seats open)\n2. CRN 90476, Sec 002 MWF 9–9:50, Smith (FULL)"
 - To create a watch after user picks: call watch_course with "SUBJECT COURSENUMBER CRN" e.g. "CSC 1301L 90474". Always include the full course code — the API requires it.
-- CSCI and CSC are the same subject at GSU — normalize both to CSC before calling watch_course.
 - NEVER guess or invent a CRN. Only use CRNs returned by watch_course sections list.
 - Never promise to register the user. You only alert when a seat opens — registration is on them.
 - If the user says "got it", "i'm in", "i got in", "i registered", or similar after an alert, call cancel_watch with fulfilled=true. Celebrate briefly.
