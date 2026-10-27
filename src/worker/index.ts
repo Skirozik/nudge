@@ -11,6 +11,7 @@ import { startOutageMonitor, handleServerFailure, markOutage } from '../lib/outa
 import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH } from '../lib/watches'
 import { bannerFor } from '../lib/banner'
 import { getSchool, getLiveSchool, liveSchools } from '../lib/schools'
+import { claimBroadcastSend } from '../lib/broadcast'
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
 
@@ -604,6 +605,10 @@ const worker = new Worker(
 
     if (job.name === 'send-broadcast') {
       const { userId, phone, message } = job.data as { userId?: string; phone: string; message: string }
+      if (!(await claimBroadcastSend(String(job.id)))) {
+        console.log(`[worker] Broadcast job ${job.id} already ran — skipping so nobody gets it twice`)
+        return
+      }
       await sendMessage(phone, message)
       // Log so broadcasts show up in dashboard history + agent context
       if (userId) {
