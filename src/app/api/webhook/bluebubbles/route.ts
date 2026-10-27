@@ -8,6 +8,13 @@ import { redis, setSurgeMode } from '@/lib/redis'
 import { scheduleBroadcast } from '@/lib/queue'
 import { handleServerFailure, clearNotified } from '@/lib/outage'
 import { isLive, resolveSchool, SCHOOLS } from '@/lib/schools'
+import {
+  parseSeatSnipeBroadcast,
+  stageSeatSnipeBroadcast,
+  sendStagedSeatSnipeBroadcast,
+  PENDING_TTL_SECONDS,
+  SEND_SPACING_MS,
+} from '@/lib/broadcast'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -267,6 +274,34 @@ export async function POST(req: NextRequest) {
       await setSurgeMode(on, target?.id, SCHOOLS.map((sc) => sc.id))
       const where = target ? ` for ${target.shortName}` : ''
       await sendMessage(normalizedPhone, on ? `surge on${where} — polling every ~75s` : `surge off${where} — polling every 5min`)
+      return NextResponse.json({ ok: true })
+    }
+
+    // BROADCAST SEATSNIPE <message>: only students who have used SeatSnipe.
+    // Previews first; SEND within 10 minutes queues it. Must come before the
+    // everyone-broadcast below, which would otherwise catch it.
+    const seatSnipeMsg = parseSeatSnipeBroadcast(text)
+    if (seatSnipeMsg !== null) {
+      if (!seatSnipeMsg) {
+        await sendMessage(normalizedPhone, 'add the message after it: BROADCAST SEATSNIPE <message>')
+        return NextResponse.json({ ok: true })
+      }
+      const count = await stageSeatSnipeBroadcast(seatSnipeMsg)
+      await sendMessage(
+        normalizedPhone,
+        `this will text ${count} SeatSnipe user${count === 1 ? '' : 's'}:\n\n${seatSnipeMsg}\n\nreply SEND within ${PENDING_TTL_SECONDS / 60} min to send it`
+      )
+      return NextResponse.json({ ok: true })
+    }
+
+    if (cmd === 'SEND') {
+      const queued = await sendStagedSeatSnipeBroadcast()
+      await sendMessage(
+        normalizedPhone,
+        queued === null
+          ? `nothing waiting to send — previews expire after ${PENDING_TTL_SECONDS / 60} min`
+          : `queued ${queued} SeatSnipe message${queued === 1 ? '' : 's'}, about ${Math.ceil((queued * SEND_SPACING_MS) / 60_000)} min to send them all`
+      )
       return NextResponse.json({ ok: true })
     }
 
