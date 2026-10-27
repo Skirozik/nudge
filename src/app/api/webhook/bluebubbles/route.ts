@@ -12,6 +12,7 @@ import {
   parseSeatSnipeBroadcast,
   stageSeatSnipeBroadcast,
   sendStagedSeatSnipeBroadcast,
+  sendStagedSeatSnipeBroadcastTest,
   PENDING_TTL_SECONDS,
   SEND_SPACING_MS,
 } from '@/lib/broadcast'
@@ -290,6 +291,19 @@ export async function POST(req: NextRequest) {
       await sendMessage(
         normalizedPhone,
         `this will text ${count} SeatSnipe user${count === 1 ? '' : 's'}:\n\n${seatSnipeMsg}\n\nreply SEND within ${PENDING_TTL_SECONDS / 60} min to send it`
+      )
+      return NextResponse.json({ ok: true })
+    }
+
+    // SEND TEST: the staged message goes only to you, through the same queue
+    // and worker as the real send, and stays staged
+    if (cmd === 'SEND TEST') {
+      const queued = await sendStagedSeatSnipeBroadcastTest(user.id, normalizedPhone)
+      await sendMessage(
+        normalizedPhone,
+        queued
+          ? 'test queued — it should reach you once in a few seconds. reply SEND to text everyone'
+          : `nothing waiting to send — previews expire after ${PENDING_TTL_SECONDS / 60} min`
       )
       return NextResponse.json({ ok: true })
     }

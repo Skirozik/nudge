@@ -182,8 +182,9 @@ export async function scheduleBroadcast(userId: string, phone: string, message: 
     { userId, phone, message },
     {
       delay: delayMs,
-      attempts: 2,
-      backoff: { type: 'fixed', delay: 5_000 },
+      // One attempt: a send that errored may still have reached the student,
+      // and a retry would text them twice. Failures stay in the failed list.
+      attempts: 1,
       removeOnComplete: true,
       removeOnFail: false,
     }

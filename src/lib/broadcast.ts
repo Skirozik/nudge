@@ -30,6 +30,25 @@ export async function stageSeatSnipeBroadcast(message: string): Promise<number> 
   return prisma.user.count({ where: SEATSNIPE_AUDIENCE })
 }
 
+/** SEND TEST: queues the staged message for one phone (the admin's) and leaves it staged for the real SEND. */
+export async function sendStagedSeatSnipeBroadcastTest(userId: string, phone: string): Promise<boolean> {
+  const message = await redis.get(PENDING_KEY)
+  if (!message) return false
+  await scheduleBroadcast(userId, phone, message)
+  return true
+}
+
+const SENT_CLAIM_TTL_SECONDS = 7 * 24 * 60 * 60
+
+/**
+ * Claims a broadcast job before its text goes out, so it's sent at most once.
+ * A stalled job is re-delivered with the same id (the worker skips lock
+ * renewal), and the re-run finds the claim and stops.
+ */
+export async function claimBroadcastSend(jobId: string): Promise<boolean> {
+  return (await redis.set(`nudge:broadcast:sent:${jobId}`, '1', 'EX', SENT_CLAIM_TTL_SECONDS, 'NX')) === 'OK'
+}
+
 /** Queues the staged message for every SeatSnipe student. Null when nothing is staged (or it expired). */
 export async function sendStagedSeatSnipeBroadcast(): Promise<number | null> {
   // GETDEL so a duplicate SEND can't queue it twice

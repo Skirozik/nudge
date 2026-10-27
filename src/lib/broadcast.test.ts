@@ -5,7 +5,7 @@ vi.mock('./prisma', () => ({
   prisma: { user: { count: vi.fn(), findMany: vi.fn() } },
 }))
 vi.mock('./redis', () => ({
-  redis: { set: vi.fn(), getdel: vi.fn() },
+  redis: { set: vi.fn(), get: vi.fn(), getdel: vi.fn() },
 }))
 vi.mock('./queue', () => ({
   scheduleBroadcast: vi.fn(),
@@ -15,6 +15,8 @@ import {
   parseSeatSnipeBroadcast,
   stageSeatSnipeBroadcast,
   sendStagedSeatSnipeBroadcast,
+  sendStagedSeatSnipeBroadcastTest,
+  claimBroadcastSend,
   SEATSNIPE_AUDIENCE,
   PENDING_TTL_SECONDS,
   SEND_SPACING_MS,
@@ -26,6 +28,7 @@ import { scheduleBroadcast } from './queue'
 const mockCount = prisma.user.count as ReturnType<typeof vi.fn>
 const mockFindMany = prisma.user.findMany as ReturnType<typeof vi.fn>
 const mockSet = redis.set as ReturnType<typeof vi.fn>
+const mockGet = redis.get as ReturnType<typeof vi.fn>
 const mockGetdel = redis.getdel as ReturnType<typeof vi.fn>
 const mockSchedule = scheduleBroadcast as ReturnType<typeof vi.fn>
 
@@ -110,5 +113,32 @@ describe('sendStagedSeatSnipeBroadcast', () => {
     expect(await sendStagedSeatSnipeBroadcast()).toBe(1)
     expect(await sendStagedSeatSnipeBroadcast()).toBeNull()
     expect(mockSchedule).toHaveBeenCalledOnce()
+  })
+})
+
+describe('sendStagedSeatSnipeBroadcastTest', () => {
+  it('queues the preview for the admin only and leaves it staged', async () => {
+    mockGet.mockResolvedValue('back for spring')
+    expect(await sendStagedSeatSnipeBroadcastTest('admin', '+14045550100')).toBe(true)
+    expect(mockSchedule.mock.calls).toEqual([['admin', '+14045550100', 'back for spring']])
+    expect(mockGetdel).not.toHaveBeenCalled()
+    expect(mockFindMany).not.toHaveBeenCalled()
+  })
+
+  it('returns false when no preview is waiting', async () => {
+    mockGet.mockResolvedValue(null)
+    expect(await sendStagedSeatSnipeBroadcastTest('admin', '+14045550100')).toBe(false)
+    expect(mockSchedule).not.toHaveBeenCalled()
+  })
+})
+
+// ── once per student ───────────────────────────────────────────────────────
+
+describe('claimBroadcastSend', () => {
+  it('claims a job once with SET NX; a re-run of the same job is refused', async () => {
+    mockSet.mockResolvedValueOnce('OK').mockResolvedValueOnce(null)
+    expect(await claimBroadcastSend('77')).toBe(true)
+    expect(await claimBroadcastSend('77')).toBe(false)
+    expect(mockSet).toHaveBeenCalledWith('nudge:broadcast:sent:77', '1', 'EX', expect.any(Number), 'NX')
   })
 })
