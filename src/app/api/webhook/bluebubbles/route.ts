@@ -32,9 +32,13 @@ interface BBPayload {
 // Redis-based dedup — BlueBubbles often fires the same webhook twice, and on Vercel
 // the duplicates can land on different serverless instances, so in-memory state can't catch them.
 // SET NX is atomic: exactly one invocation wins.
+// The window is days, not minutes: BlueBubbles also re-announces old messages hours
+// later (one "Hi" from 11:10 AM came back at 11:13 PM, 12:52 AM and 2:36 AM on
+// 2026-10-26/27), and each repeat got a fresh agent reply.
+const DEDUP_WINDOW_SECONDS = 7 * 24 * 60 * 60
 async function isDuplicate(guid: string): Promise<boolean> {
   try {
-    const added = await redis.set(`nudge:webhook:guid:${guid}`, '1', 'EX', 300, 'NX')
+    const added = await redis.set(`nudge:webhook:guid:${guid}`, '1', 'EX', DEDUP_WINDOW_SECONDS, 'NX')
     return added !== 'OK'
   } catch (err) {
     console.error('[webhook] dedup check failed (processing anyway):', err instanceof Error ? err.message : String(err))
