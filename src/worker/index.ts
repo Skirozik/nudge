@@ -41,6 +41,8 @@ const NAG_ESCALATION = [
 const MONDAY_CHECKIN_BODY = "new week, what's on your plate? 📚"
 // Comfortably longer than any single run, far shorter than the weekly cadence.
 const CHECKIN_DEDUP_MS = 12 * 60 * 60 * 1000
+// Off unless MONDAY_CHECKIN=on. Turned off 2026-10-27.
+const MONDAY_CHECKIN_ON = process.env.MONDAY_CHECKIN === 'on'
 
 async function appendToConversation(userId: string, message: string): Promise<void> {
   const existing = await prisma.conversation.findUnique({ where: { userId } })
@@ -612,6 +614,8 @@ const worker = new Worker(
     }
 
     if (job.name === 'send-monday-checkin') {
+      // A run already queued in Redis can still fire after the switch is turned off.
+      if (!MONDAY_CHECKIN_ON) return
       const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)
       const users = await prisma.user.findMany({
         where: {
@@ -729,19 +733,26 @@ function startWatcherDeadMan(): void {
   }, CHECK_INTERVAL_MS)
 }
 
-// Monday 9 AM Eastern year-round — a fixed UTC hour drifts when DST flips
+// Monday 9 AM Eastern year-round — a fixed UTC hour drifts when DST flips.
+// When the check-in is off, every Monday cron is removed, since the schedule
+// lives in Redis and outlasts the worker.
 async function ensureMondayCron(): Promise<void> {
   const desired = { pattern: '0 9 * * 1', tz: 'America/New_York' }
   try {
     const repeatables = await reminderQueue.getRepeatableJobs()
     for (const r of repeatables) {
-      if (r.name === 'send-monday-checkin' && (r.pattern !== desired.pattern || r.tz !== desired.tz)) {
+      if (r.name !== 'send-monday-checkin') continue
+      if (!MONDAY_CHECKIN_ON || r.pattern !== desired.pattern || r.tz !== desired.tz) {
         await reminderQueue.removeRepeatableByKey(r.key)
-        console.log(`[worker] Removed stale Monday cron (${r.pattern ?? r.every} ${r.tz ?? 'UTC'})`)
+        console.log(`[worker] Removed ${MONDAY_CHECKIN_ON ? 'stale ' : ''}Monday cron (${r.pattern ?? r.every} ${r.tz ?? 'UTC'})`)
       }
     }
   } catch (e) {
-    console.error('[worker] Failed to clean up stale Monday crons:', e)
+    console.error('[worker] Failed to clean up Monday crons:', e)
+  }
+  if (!MONDAY_CHECKIN_ON) {
+    console.log('[worker] Monday check-in is off (set MONDAY_CHECKIN=on to send it)')
+    return
   }
   await reminderQueue.add('send-monday-checkin', {}, { repeat: desired, jobId: 'monday-checkin-cron' })
 }
