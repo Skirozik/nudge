@@ -21,6 +21,16 @@ model User {
   // A watch request sent before the student picked a school; replayed once they do
   pendingWatchQuery String?
   pendingWatchAt    DateTime?
+  // What they came for: 'seatsnipe' | 'nudge' | 'both' (src/lib/pick.ts). Asked on a
+  // new number's first text; past users got one from their history. Null = no lean.
+  product           String?
+  // Where a new number is in the welcome: 'new' (no text handled yet),
+  // 'awaiting_product' (asked SeatSnipe or Nudge) or 'awaiting_school' (picked
+  // SeatSnipe, asked their school). Null once the welcome is done.
+  onboarding        String?
+  // What they asked for before or with their pick, held during the welcome and
+  // answered once they pick: JSON [{ "text", "at" }], each with its send time
+  onboardingHeld    String?
   assignments       Assignment[]
   conversation      Conversation?
   messages          Message[]

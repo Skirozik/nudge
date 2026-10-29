@@ -64,10 +64,10 @@ describe('parseSeatSnipeBroadcast', () => {
 // ── audience ───────────────────────────────────────────────────────────────
 
 describe('SEATSNIPE_AUDIENCE', () => {
-  it('only reaches students who had a watch or picked a school, and never opted-out ones', () => {
+  it('only reaches students who had a watch, picked a school, or picked SeatSnipe, and never opted-out ones', () => {
     expect(SEATSNIPE_AUDIENCE).toEqual({
       optedOut: false,
-      OR: [{ watches: { some: {} } }, { school: { not: null } }],
+      OR: [{ watches: { some: {} } }, { school: { not: null } }, { product: { in: ['seatsnipe', 'both'] } }],
     })
   })
 })

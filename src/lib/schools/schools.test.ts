@@ -11,6 +11,8 @@ describe('resolveSchool', () => {
     ['GSU', 'gsu'],
     ['georgia state', 'gsu'],
     ['Georgia State.', 'gsu'],
+    ['GA State', 'gsu'],
+    ['Georgia St', 'gsu'],
     ['GT', 'gatech'],
     ['Georgia Tech', 'gatech'],
     ['ga tech', 'gatech'],

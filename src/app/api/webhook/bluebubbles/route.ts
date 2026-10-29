@@ -8,6 +8,9 @@ import { redis, setSurgeMode } from '@/lib/redis'
 import { scheduleBroadcast } from '@/lib/queue'
 import { handleServerFailure, clearNotified } from '@/lib/outage'
 import { isLive, resolveSchool, SCHOOLS } from '@/lib/schools'
+import { createUser, runWelcome, welcomeForPhoto, replayHeldText, heldTextNote } from '@/lib/onboarding'
+import { isOptOut, isReaction } from '@/lib/inbound'
+import { startNewUserTest, endNewUserTest } from '@/lib/testMode'
 import {
   parseSeatSnipeBroadcast,
   stageSeatSnipeBroadcast,
@@ -34,6 +37,9 @@ interface BBPayload {
     }>
     handle?: { address: string }
     chats?: Array<{ guid: string }>
+    // Set on tapbacks (Liked, Loved, …): the message they react to
+    associatedMessageGuid?: string | null
+    associatedMessageType?: string | null
   }
 }
 
@@ -104,24 +110,36 @@ export async function POST(req: NextRequest) {
   if (imageAttachment) {
     let user = await prisma.user.findUnique({ where: { phone: normalizedPhone } })
     if (user?.optedOut) return NextResponse.json({ ok: true })
-    if (!user) user = await prisma.user.create({ data: { phone: normalizedPhone } })
+    if (!user) user = await createUser(normalizedPhone, data.text ?? '')
 
     await prisma.message.create({ data: { userId: user.id, direction: 'in', body: '[photo]' } })
-    void sendTypingIndicator(phone)
 
     try {
+      // A syllabus photo before they've picked counts as a Nudge pick. What
+      // they'd asked for before it still gets answered, read or not.
+      const held = await welcomeForPhoto(user.id, normalizedPhone)
+      void sendTypingIndicator(phone)
+
       const attachment = await downloadAttachment(imageAttachment.guid)
       if (!attachment) {
         await sendMessage(phone, "couldn't download that photo — try sending it again?")
+        if (held) await replayHeldText(user.id, normalizedPhone, held)
         return NextResponse.json({ ok: true })
       }
 
-      const extracted = await parseSyllabusImage(attachment.buffer, attachment.mimeType, user.timezone)
+      // An image the vision call rejects (too big, too tall) reads like one with
+      // nothing in it, so a held request is still answered below. A real outage
+      // fails again in that reply and still reaches the catch.
+      const extracted = await parseSyllabusImage(attachment.buffer, attachment.mimeType, user.timezone).catch((err) => {
+        console.error('[webhook] syllabus read failed:', err instanceof Error ? err.message : String(err))
+        return []
+      })
 
       if (extracted.length === 0) {
         const reply = "couldn't make out any assignments in that one — try a clearer photo?"
         await sendMessage(phone, reply)
         await prisma.message.create({ data: { userId: user.id, direction: 'out', body: reply } })
+        if (held) await replayHeldText(user.id, normalizedPhone, held)
         return NextResponse.json({ ok: true })
       }
 
@@ -135,7 +153,8 @@ export async function POST(req: NextRequest) {
       await prisma.message.create({ data: { userId: user.id, direction: 'out', body: preview } })
 
       const captionText = data.text?.trim()
-      const syntheticMsg = `[The user sent a syllabus photo${captionText ? ` and also said: "${captionText}"` : ''}. I extracted these assignments: ${JSON.stringify(extracted)}. Ask the user which ones to save, then call add_assignment for each confirmed one with source set to "screenshot". If they say "save all" or "all of them", save every one without asking about each individually — but still confirm reminder preferences in bulk.]`
+      const earlierText = held ? heldTextNote(held) : ''
+      const syntheticMsg = `[The user sent a syllabus photo${captionText ? ` and also said: "${captionText}"` : ''}.${earlierText} I extracted these assignments: ${JSON.stringify(extracted)}. Ask the user which ones to save, then call add_assignment for each confirmed one with source set to "screenshot". If they say "save all" or "all of them", save every one without asking about each individually — but still confirm reminder preferences in bulk.]`
       const agentReply = await runAgent(user.id, syntheticMsg)
       if (agentReply) {
         await sendMessage(phone, agentReply)
@@ -154,16 +173,13 @@ export async function POST(req: NextRequest) {
 
   const upper = text.toUpperCase()
 
-  // Opt-out keywords. STOP is the carrier standard and stays silent, but people
-  // reasonably reach for UNSUBSCRIBE/END/QUIT/CANCEL too — and anything we don't
-  // match here falls through to the agent, which replies as if nothing happened.
-  // That reads as "I asked to stop and it kept texting me", so treat them alike.
-  const OPT_OUT_WORDS = ['STOP', 'UNSUBSCRIBE', 'END', 'QUIT', 'CANCEL', 'STOPALL', 'REVOKE', 'OPTOUT', 'OPT OUT']
-  if (OPT_OUT_WORDS.includes(upper)) {
+  // Opt-out keywords (see src/lib/inbound.ts). A new number that opts out first
+  // still starts the welcome if it ever texts START and then something real.
+  if (isOptOut(upper)) {
     await prisma.user.upsert({
       where: { phone: normalizedPhone },
       update: { optedOut: true },
-      create: { phone: normalizedPhone, optedOut: true },
+      create: { phone: normalizedPhone, optedOut: true, onboarding: 'new' },
     })
     return NextResponse.json({ ok: true })
   }
@@ -173,9 +189,26 @@ export async function POST(req: NextRequest) {
     await prisma.user.upsert({
       where: { phone: normalizedPhone },
       update: { optedOut: false },
-      create: { phone: normalizedPhone, optedOut: false },
+      create: { phone: normalizedPhone, optedOut: false, onboarding: 'new' },
     })
     await sendMessage(normalizedPhone, "You're back! I'm Nudge, your study buddy. What's due?")
+    return NextResponse.json({ ok: true })
+  }
+
+  const isAdmin = !!process.env.ADMIN_PHONE && normalizedPhone === normalizePhone(process.env.ADMIN_PHONE)
+
+  // Admin test mode, before the user lookup since it swaps which account this
+  // phone points at: NEWUSER makes the next text a first text, NEWUSER OFF undoes it
+  if (isAdmin && (upper === 'NEWUSER' || upper === 'NEWUSER OFF')) {
+    let reply: string
+    try {
+      reply = upper === 'NEWUSER' ? await startNewUserTest(normalizedPhone) : await endNewUserTest(normalizedPhone)
+    } catch (err) {
+      // e.g. a test text still being answered wrote a row mid-delete, so the delete rolled back
+      console.error('[webhook] test mode switch failed:', err instanceof Error ? err.message : String(err))
+      reply = `couldn't switch test mode, probably because a test text was still being answered. nothing changed, try ${upper} again in a few seconds.`
+    }
+    await sendMessage(normalizedPhone, reply)
     return NextResponse.json({ ok: true })
   }
 
@@ -201,44 +234,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
-  const isNewUser = !user
-  if (!user) {
-    const lower = text.toLowerCase()
-    const source = ['nsbe', 'gdg', 'reddit', 'colorstack'].find((kw) => lower.includes(kw)) ?? null
-    user = await prisma.user.create({ data: { phone: normalizedPhone, source } })
-  }
+  // A number we've never seen starts the welcome (src/lib/onboarding.ts)
+  if (!user) user = await createUser(normalizedPhone, text)
 
   // Log inbound
   await prisma.message.create({
     data: { userId: user.id, direction: 'in', body: text },
   })
 
-  // New users get a welcome sequence, then fall through to the agent so their first request is handled
-  if (isNewUser) {
-    try {
-      const isSeatSnipe = /\bwatch\b|\bcrn\b/i.test(text)
-
-      const intro = "hey, welcome! i'm nudge 👋"
-      await sendMessage(normalizedPhone, intro)
-      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: intro } })
-
-      const context = isSeatSnipe
-        ? "since you're here for seatsnipe — heads up: when i text you that a seat opened, you need to register right away. seats go fast and i can't hold one for you."
-        : "i send you reminders for assignments and tasks so nothing slips through. just tell me what's due and i'll handle the rest."
-      await sendMessage(normalizedPhone, context)
-      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: context } })
-
-      const tip = "💡 add me to your allowed contacts so messages get through even on Do Not Disturb → Settings › Focus › Do Not Disturb › People › Add."
-      await sendMessage(normalizedPhone, tip)
-      await prisma.message.create({ data: { userId: user.id, direction: 'out', body: tip } })
-    } catch (err) {
-      console.error('[webhook] new user welcome error:', err)
-    }
-    // fall through — agent runs below to handle their first message
-  }
-
-  // Admin command short-circuit — must be before runAgent()
-  if (process.env.ADMIN_PHONE && normalizedPhone === normalizePhone(process.env.ADMIN_PHONE)) {
+  // Admin command short-circuit — before the welcome, so commands still work
+  // in test mode, and before runAgent()
+  if (isAdmin) {
     const cmd = text.trim().toUpperCase()
 
     if (cmd === 'STATS') {
@@ -332,6 +338,18 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true })
       }
     }
+  }
+
+  // The welcome: a new number is asked "SeatSnipe or Nudge?" and has to answer
+  // before anything else happens
+  try {
+    const reaction = isReaction(text, data.associatedMessageGuid ?? data.associatedMessageType)
+    if (await runWelcome(user.id, normalizedPhone, text, { reaction })) return NextResponse.json({ ok: true })
+  } catch (err) {
+    const errMsg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err)
+    console.error('[webhook] welcome error:', errMsg)
+    await handleServerFailure(user.id, normalizedPhone, err)
+    return NextResponse.json({ ok: true })
   }
 
   // Run agent and reply

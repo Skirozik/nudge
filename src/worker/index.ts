@@ -12,6 +12,8 @@ import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_
 import { bannerFor } from '../lib/banner'
 import { getSchool, getLiveSchool, liveSchools } from '../lib/schools'
 import { claimBroadcastSend } from '../lib/broadcast'
+import { createUser, runWelcome } from '../lib/onboarding'
+import { isOptOut, isReaction } from '../lib/inbound'
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
 
@@ -200,33 +202,43 @@ async function recoverMissedMessages(): Promise<void> {
     ? lastSeen.createdAt.getTime() - 2 * 60 * 1000
     : cutoff.getTime()
 
-  let messages: Array<{
+  const messages: Array<{
     guid: string
     text?: string
     isFromMe: boolean
     dateCreated: number
     handle?: { address: string }
     chats?: Array<{ guid: string }>
-  }>
+    associatedMessageGuid?: string | null
+  }> = []
 
-  try {
-    const res = await fetch(
-      `${url}/api/v1/message/query?password=${encodeURIComponent(password)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 50, sort: 'ASC', after: sinceMs, with: ['handle', 'chat'] }),
+  // Page through everything since the floor: our own texts, the admin's and ones
+  // already handled come back too, and one page of them could hide a student's
+  const PAGE = 50
+  const MAX_PAGES = 20
+  for (let page = 0; page < MAX_PAGES; page++) {
+    let batch: typeof messages
+    try {
+      const res = await fetch(
+        `${url}/api/v1/message/query?password=${encodeURIComponent(password)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: PAGE, offset: page * PAGE, sort: 'ASC', after: sinceMs, with: ['handle', 'chat'] }),
+        }
+      )
+      if (!res.ok) {
+        console.log(`[worker] BlueBubbles message query returned ${res.status} — ${page ? 'replaying what came back' : 'skipping missed message recovery'}`)
+        break
       }
-    )
-    if (!res.ok) {
-      console.log(`[worker] BlueBubbles message query returned ${res.status} — skipping missed message recovery`)
-      return
+      batch = ((await res.json()).data ?? []) as typeof messages
+    } catch {
+      break // BlueBubbles still unreachable — replay whatever came back, if anything
     }
-    const json = await res.json()
-    messages = json.data ?? []
-  } catch {
-    return // BlueBubbles still unreachable — skip quietly
+    messages.push(...batch)
+    if (batch.length < PAGE) break
   }
+  if (messages.length === 0) return
 
   const candidates = messages.filter(
     (m) =>
@@ -238,9 +250,15 @@ async function recoverMissedMessages(): Promise<void> {
   if (candidates.length === 0) return
   console.log(`[worker] Checking ${candidates.length} recent BlueBubbles messages for missed ones...`)
 
+  const adminPhone = process.env.ADMIN_PHONE ? normalizePhone(process.env.ADMIN_PHONE) : null
+
   for (const m of candidates) {
     const phone = m.handle?.address
     if (!phone) continue
+    // Never replay the admin's own texts: a late reply to them is no use, and
+    // after a NEWUSER test (whose rows NEWUSER OFF deletes) they would be
+    // replayed into the restored real account
+    if (adminPhone && normalizePhone(phone) === adminPhone) continue
     const body = m.text!.trim()
     const msgTime = new Date(m.dateCreated)
 
@@ -258,16 +276,16 @@ async function recoverMissedMessages(): Promise<void> {
     })
     if (alreadyHandled) continue
 
-    // Honor STOP/START keywords — do not replay through the agent
+    // Honor opt-out and START keywords — do not replay through the agent
     const upper = body.toUpperCase()
-    if (upper === 'STOP') {
+    if (isOptOut(upper)) {
       const normalized = normalizePhone(phone)
-      await prisma.user.upsert({ where: { phone: normalized }, update: { optedOut: true }, create: { phone: normalized, optedOut: true } })
+      await prisma.user.upsert({ where: { phone: normalized }, update: { optedOut: true }, create: { phone: normalized, optedOut: true, onboarding: 'new' } })
       continue
     }
     if (upper === 'START') {
       const normalized = normalizePhone(phone)
-      await prisma.user.upsert({ where: { phone: normalized }, update: { optedOut: false }, create: { phone: normalized, optedOut: false } })
+      await prisma.user.upsert({ where: { phone: normalized }, update: { optedOut: false }, create: { phone: normalized, optedOut: false, onboarding: 'new' } })
       try { await sendMessage(normalized, "You're back! I'm Nudge, your study buddy. What's due?") } catch {}
       continue
     }
@@ -277,12 +295,18 @@ async function recoverMissedMessages(): Promise<void> {
     const normalized = normalizePhone(phone)
     let user = await prisma.user.findUnique({ where: { phone: normalized } })
     if (user?.optedOut) continue
-    if (!user) user = await prisma.user.create({ data: { phone: normalized } })
+    if (!user) user = await createUser(normalized, body)
 
     await prisma.message.create({ data: { userId: user.id, direction: 'in', body } })
 
     try {
-      const reply = await runAgent(user.id, body, { lateReply: true })
+      // Missed texts from new numbers go through the welcome like any other
+      const welcomed = await runWelcome(user.id, normalized, body, {
+        lateReply: true,
+        sentAt: msgTime,
+        reaction: isReaction(body, m.associatedMessageGuid),
+      })
+      const reply = welcomed ? '' : await runAgent(user.id, body, { lateReply: true })
       if (reply) {
         await sendMessage(normalized, reply)
         await prisma.message.create({ data: { userId: user.id, direction: 'out', body: reply } })

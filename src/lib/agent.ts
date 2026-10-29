@@ -6,6 +6,7 @@ import { listWatches, cancelWatch } from './watches'
 import { watchCourse, setSchool } from './seatsnipeTools'
 import { getSchool, liveSchools } from './schools'
 import { getOrCreateLocationToken } from './locationToken'
+import { pickGuidance, leanFromUse } from './pick'
 
 const client = new Anthropic()
 
@@ -423,6 +424,28 @@ async function executeTool(
   }
 }
 
+/**
+ * Which side unclear texts lean toward: their welcome pick, until they've used
+ * the other side more recently (a watch vs. an assignment or reminder).
+ */
+async function currentLean(userId: string, product: string | null | undefined): Promise<'seatsnipe' | 'nudge' | null> {
+  if (product !== 'seatsnipe' && product !== 'nudge') return null
+  const newest = { orderBy: { createdAt: 'desc' }, select: { createdAt: true } } as const
+  const [watch, watchArmed, assignment, oneOff, location] = await Promise.all([
+    prisma.watch.findFirst({ where: { userId }, ...newest }),
+    // Re-arming a watch reuses its row, so the event is the better clock
+    prisma.metricEvent.findFirst({ where: { userId, kind: 'watch_created' }, ...newest }),
+    prisma.assignment.findFirst({ where: { userId }, ...newest }),
+    prisma.oneOffReminder.findFirst({ where: { userId }, ...newest }),
+    prisma.locationReminder.findFirst({ where: { userId }, ...newest }),
+  ])
+  const latest = (rows: Array<{ createdAt: Date } | null>) => {
+    const times = rows.flatMap((r) => (r ? [r.createdAt.getTime()] : []))
+    return times.length ? new Date(Math.max(...times)) : null
+  }
+  return leanFromUse(product, latest([watch, watchArmed]), latest([assignment, oneOff, location]))
+}
+
 export async function runAgent(userId: string, userMessage: string, opts?: { lateReply?: boolean }): Promise<string> {
   const user = await prisma.user.findUnique({ where: { id: userId } })
   const persona = user?.persona ?? 'coach'
@@ -471,7 +494,11 @@ export async function runAgent(userId: string, userMessage: string, opts?: { lat
     : 0
   const localDateStr = new Date(nowUtc.getTime() + offsetMs).toISOString().slice(0, 10)
 
-  const systemPrompt = `${PERSONAS[persona] ?? PERSONAS.coach}
+  // What they came for, unless they've used the other side more recently;
+  // only used to read unclear texts
+  const whyTheyCame = pickGuidance(await currentLean(userId, user?.product))
+
+  const systemPrompt =`${PERSONAS[persona] ?? PERSONAS.coach}
 
 RULES (never break these):
 - Always confirm the assignment title AND the exact due date/time BEFORE calling add_assignment. If the date is ambiguous ("Friday", "next week", no time given), state your assumption and ask the user to confirm before saving.
@@ -512,7 +539,7 @@ SEAT WATCH RULES:
 - If the user says "got it", "i'm in", "i got in", "i registered", or similar after an alert, call cancel_watch with fulfilled=true. Celebrate briefly.
 - Max 5 active watches per user. If watch_course returns an error about the limit, tell them clearly.
 - A watch retires after 3 seat alerts. list_watches marks those with retired=true — say that one's done and offer to turn it back on (call watch_course again with the same course code and CRN). Don't describe a retired watch as still active.
-
+${whyTheyCame ? `\n${whyTheyCame}\n` : ''}
 LOCATION REMINDERS:
 - "when I get home / arrive at / get to [place]" → set_location_reminder
 - Location label should be short and lowercase: "home", "work", "the gym", "school"

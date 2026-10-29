@@ -4,7 +4,7 @@ export const gsu: School = {
   id: 'gsu',
   name: 'Georgia State University',
   shortName: 'GSU',
-  aliases: ['gsu', 'georgia state', 'georgia state university', 'gosolar', 'go solar'],
+  aliases: ['gsu', 'georgia state', 'georgia state university', 'ga state', 'georgia st', 'gosolar', 'go solar'],
   banner: {
     baseUrl: 'https://registration.gosolar.gsu.edu/StudentRegistrationSsb',
     registerSite: 'gosolar.gsu.edu',

@@ -74,6 +74,16 @@ async function appendAssistantMessage(userId: string, message: string): Promise<
  */
 export async function handleServerFailure(userId: string, phone: string, err: unknown): Promise<void> {
   const reason = err instanceof Error ? err.message : String(err)
+
+  // An account deleted mid-reply (admin test mode wiping its test account)
+  // isn't an outage. If the lookup itself fails, the database is down: it is one.
+  const exists = await prisma.user
+    .findUnique({ where: { id: userId }, select: { id: true } })
+    .then(Boolean, () => true)
+  if (!exists) {
+    console.log(`[outage] user ${userId} was deleted mid-reply — not an outage: ${reason.slice(0, 200)}`)
+    return
+  }
   let firstTime = true
   let startedOutage = false
 

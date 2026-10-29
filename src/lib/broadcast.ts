@@ -3,10 +3,14 @@ import { prisma } from './prisma'
 import { redis } from './redis'
 import { scheduleBroadcast } from './queue'
 
-/** Students who have used SeatSnipe: they've had a watch or picked a school. Nudge-only users are left out. */
+/**
+ * Students who have used SeatSnipe or said they came for it: they've had a
+ * watch, picked a school, or picked SeatSnipe (or both) in the welcome.
+ * Nudge-only users are left out.
+ */
 export const SEATSNIPE_AUDIENCE = {
   optedOut: false,
-  OR: [{ watches: { some: {} } }, { school: { not: null } }],
+  OR: [{ watches: { some: {} } }, { school: { not: null } }, { product: { in: ['seatsnipe', 'both'] } }],
 } satisfies Prisma.UserWhereInput
 
 const PENDING_KEY = 'nudge:broadcast:seatsnipe:pending'
