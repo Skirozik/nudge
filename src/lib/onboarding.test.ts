@@ -21,7 +21,7 @@ import {
   schoolReplyMessage,
   HELD_TEXT_TTL_MS,
 } from './onboarding'
-import { PICK_QUESTION, PICK_REASK, SEATSNIPE_WELCOME, NUDGE_WELCOME, DND_TIP, SCHOOL_QUESTION } from './pick'
+import { PICK_TEXTS, PICK_REASK, SEATSNIPE_WELCOME, NUDGE_WELCOME, DND_TIP, SCHOOL_QUESTION } from './pick'
 import { prisma } from './prisma'
 import { sendMessage } from './bluebubbles'
 import { runAgent } from './agent'
@@ -118,19 +118,19 @@ describe('createUser', () => {
 describe('first text', () => {
   it('asks the question; a bare greeting holds nothing', async () => {
     expect(await runWelcome('u1', PHONE, 'hi')).toBe(true)
-    expect(sent).toEqual([PICK_QUESTION])
+    expect(sent).toEqual(PICK_TEXTS)
     expect(user).toMatchObject({ onboarding: 'awaiting_product', onboardingHeld: null, product: null })
     expect(mockRunAgent).not.toHaveBeenCalled()
     expect(convo).toEqual([
       { role: 'user', content: 'hi' },
-      { role: 'assistant', content: PICK_QUESTION },
+      { role: 'assistant', content: PICK_TEXTS.join('\n\n') },
     ])
   })
 
   it('holds a request, with the time it was sent', async () => {
     const sentAt = minutesAgo(5)
     await runWelcome('u1', PHONE, 'can you help me stay organized', { sentAt })
-    expect(sent).toEqual([PICK_QUESTION])
+    expect(sent).toEqual(PICK_TEXTS)
     expect(JSON.parse(user.onboardingHeld!)).toEqual([{ text: 'can you help me stay organized', at: sentAt.toISOString() }])
   })
 
@@ -209,7 +209,7 @@ describe('answering the question', () => {
   it('"hey" then a request in a second bubble: the request picks Nudge and is answered', async () => {
     await runWelcome('u1', PHONE, 'hey')
     await runWelcome('u1', PHONE, 'can you remind me about my bio exam friday at 2')
-    expect(sent).toEqual([PICK_QUESTION, NUDGE_WELCOME, DND_TIP, 'AGENT REPLY'])
+    expect(sent).toEqual([...PICK_TEXTS, NUDGE_WELCOME, DND_TIP, 'AGENT REPLY'])
     expect(agentMessage()).toContain('can you remind me about my bio exam friday at 2')
   })
 
@@ -232,7 +232,7 @@ describe('answering the question', () => {
   it('Nudge after only greetings and the pick with filler: no extra reply, the welcome says what to do', async () => {
     await runWelcome('u1', PHONE, 'hi')
     await runWelcome('u1', PHONE, 'nudge thx')
-    expect(sent).toEqual([PICK_QUESTION, NUDGE_WELCOME, DND_TIP])
+    expect(sent).toEqual([...PICK_TEXTS, NUDGE_WELCOME, DND_TIP])
     expect(mockRunAgent).not.toHaveBeenCalled()
   })
 
@@ -300,14 +300,14 @@ describe('answering the question', () => {
   it('keeps the whole exchange in the agent history, starting on their first text', async () => {
     convo = [
       { role: 'user', content: 'remind me about my bio quiz friday' },
-      { role: 'assistant', content: PICK_QUESTION },
+      { role: 'assistant', content: PICK_TEXTS.join('\n\n') },
     ]
     asked()
     mockRunAgent.mockResolvedValue('')
     await runWelcome('u1', PHONE, 'nudge')
     expect(convo).toEqual([
       { role: 'user', content: 'remind me about my bio quiz friday' },
-      { role: 'assistant', content: PICK_QUESTION },
+      { role: 'assistant', content: PICK_TEXTS.join('\n\n') },
       { role: 'user', content: 'nudge' },
       { role: 'assistant', content: [NUDGE_WELCOME, DND_TIP].join('\n\n') },
     ])

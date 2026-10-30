@@ -5,8 +5,12 @@
  */
 export type Product = 'seatsnipe' | 'nudge' | 'both'
 
-export const PICK_QUESTION =
-  'Hi! Are you here for SeatSnipe (get a text when a seat opens in a full class)\nor\nNudge (reminders for assignments and due dates)?'
+// Sent as three separate texts, in this order
+export const PICK_TEXTS = [
+  'Hi! 👋 Which one are you here for?',
+  '🎯 SeatSnipe texts you when a seat opens in a full class',
+  '⏰ Nudge reminds you about assignments and due dates',
+]
 export const PICK_REASK = 'SeatSnipe or Nudge?'
 export const SEATSNIPE_WELCOME =
   "Got it! When I text you that a seat opened, register right away. Seats go fast and I can't hold one for you."
@@ -57,11 +61,11 @@ const REJECTED = new RegExp(
   String.raw`\b(?:(?:${REJECT}|no|without)\s+(?:the\s+|any\s+)?(?:seat\s*snipe|snipe|nudge|remind\w*|assignments?|homework|hw|both)|${REJECT}\s+(?:the\s+|any\s+)?seats?)\b`,
   'g'
 )
-// The question names SeatSnipe first and Nudge second
+// The texts list SeatSnipe first and Nudge second
 const FIRST_ONE = /^(?:the )?(?:first|1st|1)(?: one| option)?$/
 const SECOND_ONE = /^(?:the )?(?:second|2nd|2|last)(?: one| option)?$/
 
-/** Their answer to PICK_QUESTION → a pick, or null when it isn't one (ask again). */
+/** Their answer to PICK_TEXTS → a pick, or null when it isn't one (ask again). */
 export function pickFromAnswer(text: string): Product | null {
   const t = text.toLowerCase().replace(/’/g, "'").replace(REJECTED, ' ')
   if (BOTH_WORD.test(t)) return 'both'

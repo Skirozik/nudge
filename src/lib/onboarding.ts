@@ -4,7 +4,7 @@ import { runAgent } from './agent'
 import { clearNotified } from './outage'
 import { liveSchools } from './schools'
 import {
-  PICK_QUESTION,
+  PICK_TEXTS,
   PICK_REASK,
   welcomeTexts,
   pickFromAnswer,
@@ -121,8 +121,8 @@ async function step(
         return true
       }
       if (!(await claim(user, { onboarding: 'awaiting_product', onboardingHeld: serializeHeld(withThis) }))) return null
-      await say(user.id, phone, [PICK_QUESTION])
-      await remember(user.id, text, PICK_QUESTION)
+      await say(user.id, phone, PICK_TEXTS)
+      await remember(user.id, text, PICK_TEXTS.join('\n\n'))
       return true
     }
 

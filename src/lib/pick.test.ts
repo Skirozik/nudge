@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  PICK_QUESTION,
+  PICK_TEXTS,
   SEATSNIPE_WELCOME,
   NUDGE_WELCOME,
   DND_TIP,
@@ -13,11 +13,13 @@ import {
   pickGuidance,
 } from './pick'
 
-describe('PICK_QUESTION', () => {
-  it('is the agreed wording', () => {
-    expect(PICK_QUESTION).toBe(
-      'Hi! Are you here for SeatSnipe (get a text when a seat opens in a full class)\nor\nNudge (reminders for assignments and due dates)?'
-    )
+describe('PICK_TEXTS', () => {
+  it('is the agreed wording: hi and the question first, then one text per product', () => {
+    expect(PICK_TEXTS).toEqual([
+      'Hi! 👋 Which one are you here for?',
+      '🎯 SeatSnipe texts you when a seat opens in a full class',
+      '⏰ Nudge reminds you about assignments and due dates',
+    ])
   })
 })
 

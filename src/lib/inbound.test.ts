@@ -15,7 +15,7 @@ describe('isOptOut', () => {
 describe('isReaction', () => {
   it.each([
     'Liked “SeatSnipe or Nudge?”',
-    'Loved “Hi! Are you here for SeatSnipe (get a text when a seat opens in a full class) or Nudge (reminders for assignments and due dates)?”',
+    'Loved “🎯 SeatSnipe texts you when a seat opens in a full class”',
     'Questioned “What school do you go to?”',
     'Laughed at “SeatSnipe or Nudge?”',
     'Emphasized “SeatSnipe or Nudge?”',
