@@ -6,7 +6,7 @@
 export type Product = 'seatsnipe' | 'nudge' | 'both'
 
 export const PICK_QUESTION =
-  'Hi! Are you here for SeatSnipe (get a text when a seat opens in a full class) or Nudge (reminders for assignments and due dates)?'
+  'Hi! Are you here for SeatSnipe (get a text when a seat opens in a full class)\nor\nNudge (reminders for assignments and due dates)?'
 export const PICK_REASK = 'SeatSnipe or Nudge?'
 export const SEATSNIPE_WELCOME =
   "Got it! When I text you that a seat opened, register right away. Seats go fast and I can't hold one for you."

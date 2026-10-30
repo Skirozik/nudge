@@ -16,7 +16,7 @@ import {
 describe('PICK_QUESTION', () => {
   it('is the agreed wording', () => {
     expect(PICK_QUESTION).toBe(
-      'Hi! Are you here for SeatSnipe (get a text when a seat opens in a full class) or Nudge (reminders for assignments and due dates)?'
+      'Hi! Are you here for SeatSnipe (get a text when a seat opens in a full class)\nor\nNudge (reminders for assignments and due dates)?'
     )
   })
 })
