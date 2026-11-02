@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '../lib/prisma'
 import { sendMessage } from '../lib/bluebubbles'
 import { runAgent } from '../lib/agent'
+import { appendAssistantMessage } from '../lib/conversation'
 import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleSeatAlert } from '../lib/queue'
 import { normalizePhone } from '../lib/phone'
 import { startWatcherLoop, sectionKey } from '../lib/watcher'
@@ -47,15 +48,7 @@ const CHECKIN_DEDUP_MS = 12 * 60 * 60 * 1000
 // Off unless MONDAY_CHECKIN=on. Turned off 2026-10-27.
 const MONDAY_CHECKIN_ON = process.env.MONDAY_CHECKIN === 'on'
 
-async function appendToConversation(userId: string, message: string): Promise<void> {
-  const existing = await prisma.conversation.findUnique({ where: { userId } })
-  const messages = [...((existing?.messages ?? []) as object[]), { role: 'assistant', content: message }]
-  await prisma.conversation.upsert({
-    where: { userId },
-    update: { messages },
-    create: { userId, messages },
-  })
-}
+const appendToConversation = appendAssistantMessage
 
 async function generateReminderMessage(
   title: string,

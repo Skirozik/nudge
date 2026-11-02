@@ -7,6 +7,7 @@ import { watchCourse, setSchool } from './seatsnipeTools'
 import { getSchool, liveSchools } from './schools'
 import { getOrCreateLocationToken } from './locationToken'
 import { pickGuidance, leanFromUse } from './pick'
+import { freshHistory, startWithUser } from './conversation'
 
 const client = new Anthropic()
 
@@ -536,6 +537,7 @@ SEAT WATCH RULES:
 - To show sections: call watch_course with "SUBJECT COURSENUMBER" e.g. "CSC 1301L". Reply with a numbered list showing CRN, seats, and schedule. Example: "1. CRN 90474, Sec 010 MWF 9–9:50, Jones (5 seats open)\n2. CRN 90476, Sec 002 MWF 9–9:50, Smith (FULL)"
 - To create a watch after user picks: call watch_course with "SUBJECT COURSENUMBER CRN" e.g. "CSC 1301L 90474". Always include the full course code — the API requires it.
 - NEVER guess or invent a CRN. Only use CRNs returned by watch_course sections list.
+- Never say what they're watching, or that they already have a watch, from earlier messages. Watches end (every term, after 3 alerts, or when cancelled), so call list_watches. To add one, call watch_course, which says if it's already on.
 - Never promise to register the user. You only alert when a seat opens — registration is on them.
 - If the user says "got it", "i'm in", "i got in", "i registered", or similar after an alert, call cancel_watch with fulfilled=true. Celebrate briefly.
 - Max 5 active watches per user. If watch_course returns an error about the limit, tell them clearly.
@@ -560,9 +562,7 @@ LOCATION REMINDERS:
   }
 
   // Reset conversation if inactive for 30 minutes
-  const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000)
-  let messages: Anthropic.MessageParam[] =
-    convo.updatedAt < thirtyMinAgo ? [] : (convo.messages as unknown as Anthropic.MessageParam[])
+  let messages = freshHistory(convo) as Anthropic.MessageParam[]
 
   messages = [...messages, { role: 'user', content: userMessage }]
 
@@ -592,7 +592,7 @@ LOCATION REMINDERS:
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: systemPrompt,
-      messages: safeTrim(messages, 20),
+      messages: startWithUser(safeTrim(messages, 20)),
       tools: TOOLS,
     })
 

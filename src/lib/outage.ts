@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { redis } from './redis'
 import { prisma } from './prisma'
 import { sendMessage } from './bluebubbles'
+import { appendAssistantMessage } from './conversation'
 
 // Outage flow:
 // 1. Any server/API failure while handling a user (agent error, Anthropic credits out, etc.)
@@ -54,15 +55,9 @@ async function notifyAdmin(text: string): Promise<void> {
   }
 }
 
-async function appendAssistantMessage(userId: string, message: string): Promise<void> {
+async function rememberSent(userId: string, message: string): Promise<void> {
   try {
-    const existing = await prisma.conversation.findUnique({ where: { userId } })
-    const messages = [...((existing?.messages ?? []) as object[]), { role: 'assistant', content: message }]
-    await prisma.conversation.upsert({
-      where: { userId },
-      update: { messages },
-      create: { userId, messages },
-    })
+    await appendAssistantMessage(userId, message)
   } catch {
     // conversation context is nice-to-have
   }
@@ -105,7 +100,7 @@ export async function handleServerFailure(userId: string, phone: string, err: un
     try {
       await sendMessage(phone, DOWN_MESSAGE)
       await prisma.message.create({ data: { userId, direction: 'out', body: DOWN_MESSAGE } })
-      await appendAssistantMessage(userId, DOWN_MESSAGE)
+      await rememberSent(userId, DOWN_MESSAGE)
     } catch (e) {
       console.error('[outage] failed to send down message:', e instanceof Error ? e.message : String(e))
     }
@@ -153,7 +148,7 @@ export function startOutageMonitor(intervalMs = 60_000): void {
           if (user && !user.optedOut) {
             await sendMessage(user.phone, RECOVERY_MESSAGE)
             await prisma.message.create({ data: { userId, direction: 'out', body: RECOVERY_MESSAGE } })
-            await appendAssistantMessage(userId, RECOVERY_MESSAGE)
+            await rememberSent(userId, RECOVERY_MESSAGE)
             sentCount++
           }
           await redis.srem(NOTIFIED_KEY, userId)
