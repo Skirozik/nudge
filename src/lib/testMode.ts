@@ -56,6 +56,11 @@ function deleteUserOps(userId: string) {
     prisma.watch.deleteMany({ where: { userId } }),
     prisma.locationReminder.deleteMany({ where: { userId } }),
     prisma.metricEvent.deleteMany({ where: { userId } }),
+    prisma.referral.deleteMany({ where: { OR: [{ friendId: userId }, { referrerId: userId }] } }),
+    prisma.creditOffer.deleteMany({ where: { userId } }),
+    prisma.classPass.deleteMany({ where: { userId } }),
+    prisma.credit.deleteMany({ where: { userId } }),
+    prisma.payment.deleteMany({ where: { userId } }),
     prisma.user.delete({ where: { id: userId } }),
   ]
 }

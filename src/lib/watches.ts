@@ -24,6 +24,39 @@ export interface WatchRow {
   createdAt: Date
 }
 
+/**
+ * The checks a new watch has to pass: the active-watch cap and "already
+ * watching". The payment step runs them before asking for $5, and createWatch
+ * runs them again. Also returns this section's existing row, if there is one.
+ */
+export async function preflightWatch(params: {
+  userId: string
+  school: string
+  term: string
+  crn: string
+  courseCode: string
+}): Promise<{ error?: string; existing: WatchRow | null }> {
+  const activeCount = await prisma.watch.count({
+    where: { userId: params.userId, status: 'ACTIVE' },
+  })
+  if (activeCount >= MAX_WATCHES) {
+    return {
+      error: `You already have ${activeCount} active watch${activeCount === 1 ? '' : 'es'} (max ${MAX_WATCHES}). Cancel one to add another.`,
+      existing: null,
+    }
+  }
+
+  const existing = (await prisma.watch.findUnique({
+    where: {
+      userId_school_term_crn: { userId: params.userId, school: params.school, term: params.term, crn: params.crn },
+    },
+  })) as WatchRow | null
+  if (existing?.status === 'ACTIVE') {
+    return { error: `Already watching ${params.courseCode} (CRN ${params.crn}).`, existing }
+  }
+  return { existing }
+}
+
 export async function createWatch(params: {
   userId: string
   school: string
@@ -34,26 +67,18 @@ export async function createWatch(params: {
   source?: string | null
   /** Seats available at creation time — prevents a false 0→N alert on the first poll when the section already has open seats. */
   initialSeats?: number
+  /**
+   * When they asked for it (a replayed text can be older than now). Used on
+   * insert only: re-arming keeps the original, which is what keeps a section
+   * first watched before Nov 20 free.
+   */
+  createdAt?: Date
 }): Promise<{ watch?: WatchRow; error?: string }> {
-  const activeCount = await prisma.watch.count({
-    where: { userId: params.userId, status: 'ACTIVE' },
-  })
-  if (activeCount >= MAX_WATCHES) {
-    return {
-      error: `You already have ${activeCount} active watch${activeCount === 1 ? '' : 'es'} (max ${MAX_WATCHES}). Cancel one to add another.`,
-    }
-  }
+  const { error, existing } = await preflightWatch(params)
+  if (error) return { error }
 
   // Reactivate if an existing cancelled/expired watch for the same (user, school, term, crn)
-  const existing = await prisma.watch.findUnique({
-    where: {
-      userId_school_term_crn: { userId: params.userId, school: params.school, term: params.term, crn: params.crn },
-    },
-  })
   if (existing) {
-    if (existing.status === 'ACTIVE') {
-      return { error: `Already watching ${params.courseCode} (CRN ${params.crn}).` }
-    }
     const watch = await prisma.watch.update({
       where: { id: existing.id },
       data: { status: 'ACTIVE', lastSeats: params.initialSeats ?? 0, alertCount: 0, lastAlertAt: null, lastCheckedAt: null },
@@ -72,6 +97,7 @@ export async function createWatch(params: {
       sectionLabel: params.sectionLabel ?? null,
       source: params.source ?? null,
       lastSeats: params.initialSeats ?? 0,
+      ...(params.createdAt && { createdAt: params.createdAt }),
     },
   })
   await logMetric('watch_created', params.userId, { crn: params.crn, courseCode: params.courseCode, school: params.school })
