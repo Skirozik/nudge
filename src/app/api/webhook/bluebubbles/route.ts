@@ -9,7 +9,7 @@ import { scheduleBroadcast } from '@/lib/queue'
 import { handleServerFailure, clearNotified } from '@/lib/outage'
 import { isLive, resolveSchool, SCHOOLS } from '@/lib/schools'
 import { createUser, runWelcome, welcomeForPhoto, replayHeldText, heldTextNote } from '@/lib/onboarding'
-import { isOptOut, isReaction } from '@/lib/inbound'
+import { isOptOut, isReaction, OPT_OUT_REPLY } from '@/lib/inbound'
 import { startNewUserTest, endNewUserTest } from '@/lib/testMode'
 import {
   parseSeatSnipeBroadcast,
@@ -176,11 +176,14 @@ export async function POST(req: NextRequest) {
   // Opt-out keywords (see src/lib/inbound.ts). A new number that opts out first
   // still starts the welcome if it ever texts START and then something real.
   if (isOptOut(upper)) {
+    const before = await prisma.user.findUnique({ where: { phone: normalizedPhone }, select: { optedOut: true } })
     await prisma.user.upsert({
       where: { phone: normalizedPhone },
       update: { optedOut: true },
       create: { phone: normalizedPhone, optedOut: true, onboarding: 'new' },
     })
+    // One confirmation, not one per repeated STOP
+    if (!before?.optedOut) await sendMessage(normalizedPhone, OPT_OUT_REPLY)
     return NextResponse.json({ ok: true })
   }
 

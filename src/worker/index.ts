@@ -13,7 +13,7 @@ import { bannerFor } from '../lib/banner'
 import { getSchool, getLiveSchool, liveSchools } from '../lib/schools'
 import { claimBroadcastSend } from '../lib/broadcast'
 import { createUser, runWelcome } from '../lib/onboarding'
-import { isOptOut, isReaction } from '../lib/inbound'
+import { isOptOut, isReaction, OPT_OUT_REPLY } from '../lib/inbound'
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
 
@@ -280,7 +280,11 @@ async function recoverMissedMessages(): Promise<void> {
     const upper = body.toUpperCase()
     if (isOptOut(upper)) {
       const normalized = normalizePhone(phone)
+      const before = await prisma.user.findUnique({ where: { phone: normalized }, select: { optedOut: true } })
       await prisma.user.upsert({ where: { phone: normalized }, update: { optedOut: true }, create: { phone: normalized, optedOut: true, onboarding: 'new' } })
+      if (!before?.optedOut) {
+        try { await sendMessage(normalized, OPT_OUT_REPLY) } catch {}
+      }
       continue
     }
     if (upper === 'START') {

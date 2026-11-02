@@ -2,8 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { isOptOut, isReaction } from './inbound'
 
 describe('isOptOut', () => {
-  it.each(['STOP', 'UNSUBSCRIBE', 'CANCEL', 'OPT OUT'])('%s opts out', (word) => {
+  it.each(['STOP', 'UNSUBSCRIBE', 'QUIT', 'OPT OUT'])('%s opts out', (word) => {
     expect(isOptOut(word)).toBe(true)
+  })
+
+  it('CANCEL goes to the agent, since on SeatSnipe it usually means a watch', () => {
+    expect(isOptOut('CANCEL')).toBe(false)
   })
 
   it('only matches the whole text', () => {
