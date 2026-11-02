@@ -4,12 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('./prisma', () => ({
   prisma: {
     seatEvent: { create: vi.fn() },
-    watch: { update: vi.fn() },
+    watch: { update: vi.fn(), count: vi.fn(), findUnique: vi.fn(), create: vi.fn() },
     metricEvent: { create: vi.fn() },
   },
 }))
 
-import { applyDiff, claimAlertSlot, releaseAlertSlot } from './watches'
+import { applyDiff, claimAlertSlot, releaseAlertSlot, createWatch } from './watches'
 import { prisma } from './prisma'
 
 const mockSeatEventCreate = prisma.seatEvent.create as ReturnType<typeof vi.fn>
@@ -256,5 +256,47 @@ describe('lifetime cap (the NUTR 2100 case)', () => {
 
     const claim = await claimAlertSlot({ id: 'w1', alertCount: row.alertCount }, 1, '0_to_N')
     expect(claim).toEqual({ alertNumber: 1, retired: false })
+  })
+})
+
+// ── createWatch ────────────────────────────────────────────────────────────
+
+describe('createWatch', () => {
+  const mockCount = prisma.watch.count as ReturnType<typeof vi.fn>
+  const mockFindUnique = prisma.watch.findUnique as ReturnType<typeof vi.fn>
+  const mockCreate = prisma.watch.create as ReturnType<typeof vi.fn>
+  const params = { userId: 'u1', school: 'gsu', term: '202701', crn: '12345', courseCode: 'CSC 2720' }
+  const asked = new Date('2026-11-19T23:50:00-05:00')
+
+  beforeEach(() => {
+    mockCount.mockResolvedValue(0)
+    mockFindUnique.mockResolvedValue(null)
+    mockCreate.mockImplementation(async ({ data }) => ({ id: 'w-new', ...data }))
+    mockWatchUpdate.mockImplementation(async ({ data }) => ({ id: 'w-old', ...data }))
+  })
+
+  it('a new watch is stamped with when they asked', async () => {
+    await createWatch({ ...params, createdAt: asked })
+    expect(mockCreate.mock.calls[0][0].data.createdAt).toEqual(asked)
+  })
+
+  it('re-arming keeps the original createdAt, so a section from before Nov 20 stays free', async () => {
+    mockFindUnique.mockResolvedValue({ id: 'w-old', status: 'PAUSED', createdAt: new Date('2026-11-01T12:00:00Z') })
+    const result = await createWatch({ ...params, createdAt: asked })
+    expect(result.error).toBeUndefined()
+    expect(mockWatchUpdate).toHaveBeenCalledOnce()
+    expect(mockWatchUpdate.mock.calls[0][0].data).not.toHaveProperty('createdAt')
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('keeps the same cap and "already watching" errors', async () => {
+    mockCount.mockResolvedValue(5)
+    expect((await createWatch(params)).error).toContain('max 5')
+
+    mockCount.mockResolvedValue(1)
+    mockFindUnique.mockResolvedValue({ id: 'w-old', status: 'ACTIVE' })
+    expect((await createWatch(params)).error).toBe('Already watching CSC 2720 (CRN 12345).')
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockWatchUpdate).not.toHaveBeenCalled()
   })
 })

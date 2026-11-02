@@ -31,6 +31,10 @@ model User {
   // What they asked for before or with their pick, held during the welcome and
   // answered once they pick: JSON [{ "text", "at" }], each with its send time
   onboardingHeld    String?
+  // SeatSnipe referrals: their own code (made when they first need it), and a
+  // real code from their first text. Only createUser's insert writes referredByCode.
+  referralCode      String?            @unique
+  referredByCode    String?
   assignments       Assignment[]
   conversation      Conversation?
   messages          Message[]
@@ -38,6 +42,12 @@ model User {
   oneOffReminders   OneOffReminder[]
   watches           Watch[]
   locationReminders LocationReminder[]
+  payments          Payment[]
+  classPasses       ClassPass[]
+  credits           Credit[]
+  creditOffers      CreditOffer[]
+  referralsMade     Referral[]         @relation("referrer")
+  referredBy        Referral?          @relation("friend")
 }
 
 model Assignment {
@@ -193,4 +203,137 @@ model MetricEvent {
   userId    String?
   meta      Json?
   createdAt DateTime @default(now())
+}
+
+// ── SeatSnipe payments ─────────────────────────────────────────────────────
+// Statuses are text, not enums, so an older worker client can still read a row
+// with a status it doesn't know. Only userId is a foreign key; the links between
+// these tables are plain ids, so NEWUSER OFF can delete them in any order.
+// An openKey is set only while a row is open and cleared on every move out of
+// it, so the unique index allows one open row at a time (Postgres allows many NULLs).
+
+// One $5 link for one class. It's also the outbox row, and what Stripe marks paid.
+model Payment {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id])
+  school                String
+  // Saved when the link is made, never re-read from getActiveTerm's cache
+  term                  String
+  courseCode            String
+  // Sections to start once it's paid
+  crns                  String[]
+  // Seats open in crns[0] when the link was made. Above 0, the link text says so first.
+  openSeatsAtLink       Int?
+  // pending | paid | expired | cancelled | duplicate
+  status                String    @default("pending")
+  // "userId|school|term|courseCode" while pending
+  openKey               String?   @unique
+  amountCents           Int       @default(500)
+  stripeSessionId       String?   @unique
+  stripePaymentIntentId String?   @unique
+  url                   String?
+  livemode              Boolean?
+  // createdAt + 24h
+  expiresAt             DateTime
+  // Claims, so each text goes out once
+  sentAt                DateTime?
+  remindedAt            DateTime?
+  paidAt                DateTime?
+  // What activation found, so a retried job sends the same text
+  outcome               Json?
+  activatedAt           DateTime?
+  confirmedAt           DateTime?
+  firstLinkAt           DateTime?
+  // Full refunds only
+  refundedAt            DateTime?
+  disputedAt            DateTime?
+  createdAt             DateTime  @default(now())
+
+  @@index([userId, status])
+}
+
+// "This class is paid for this term", so re-arms, other sections and
+// cancel/re-add start without another $5.
+model ClassPass {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id])
+  school         String
+  term           String
+  courseCode     String
+  // stripe | credit | free (Stripe wasn't live when it should have been)
+  via            String
+  paymentId      String?   @unique
+  creditId       String?   @unique
+  // First seat alert (or seats-open note) for this class. Watch.alertCount resets on re-arm.
+  firstAlertAt   DateTime?
+  // The end-of-term free class was given (or the class was gone)
+  noSeatCreditAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@unique([userId, school, term, courseCode])
+}
+
+// A free class. The unique key means one source can't grant twice.
+model Credit {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  // referral | no_seat | class_gone | duplicate | comp
+  reason    String
+  // Referral.id, ClassPass.id, Payment.id or "comp:<message guid>"
+  sourceId  String?
+  // End of the semester after the one it was earned in
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([reason, sourceId])
+  @@index([userId, usedAt, expiresAt])
+}
+
+// The open "use your free class?" question. One per user at a time.
+model CreditOffer {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  school      String
+  term        String
+  courseCode  String
+  crns        String[]
+  // The credit YES used
+  creditId    String?
+  // asked | yes | no | superseded | expired
+  status      String    @default("asked")
+  // userId while asked
+  openKey     String?   @unique
+  reasked     Boolean   @default(false)
+  sentAt      DateTime?
+  outcome     Json?
+  activatedAt DateTime?
+  confirmedAt DateTime?
+  // Starts the 24h clock
+  createdAt   DateTime  @default(now())
+}
+
+// A referral that paid out (or hit the cap). A friend pays out once, and the
+// slot key holds the cap of 3 even when friends pay at the same moment.
+model Referral {
+  // Made in code, so the credit can point at it in the same transaction
+  id         String    @id
+  referrerId String
+  referrer   User      @relation("referrer", fields: [referrerId], references: [id])
+  friendId   String    @unique
+  friend     User      @relation("friend", fields: [friendId], references: [id])
+  paymentId  String    @unique
+  // semesterOf(paidAt), like "2026-fall"
+  semester   String
+  // 1 to 3 when earned, null when capped
+  slot       Int?
+  creditId   String?   @unique
+  notifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@unique([referrerId, semester, slot])
 }

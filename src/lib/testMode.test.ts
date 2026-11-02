@@ -15,6 +15,11 @@ vi.mock('./prisma', () => {
       watch: { deleteMany: del('watch') },
       locationReminder: { deleteMany: del('locationReminder') },
       metricEvent: { deleteMany: del('metricEvent') },
+      referral: { deleteMany: del('referral') },
+      creditOffer: { deleteMany: del('creditOffer') },
+      classPass: { deleteMany: del('classPass') },
+      credit: { deleteMany: del('credit') },
+      payment: { deleteMany: del('payment') },
       $transaction: vi.fn(),
     },
   }
@@ -51,6 +56,11 @@ const DELETE_ORDER = [
   'watch',
   'locationReminder',
   'metricEvent',
+  'referral',
+  'creditOffer',
+  'classPass',
+  'credit',
+  'payment',
   'user',
 ]
 
