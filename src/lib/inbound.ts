@@ -1,11 +1,16 @@
 // Keywords checked on every inbound text, shared by the webhook and the
 // worker's missed-message replay so both treat them the same.
 
-// STOP is the carrier standard and stays silent, but people reasonably reach for
-// UNSUBSCRIBE/END/QUIT/CANCEL too — and anything not matched here falls through
-// to the agent (or the welcome question), which reads as "I asked to stop and
-// it kept texting me", so treat them alike.
-export const OPT_OUT_WORDS = ['STOP', 'UNSUBSCRIBE', 'END', 'QUIT', 'CANCEL', 'STOPALL', 'REVOKE', 'OPTOUT', 'OPT OUT']
+// STOP is the carrier standard, but people reasonably reach for UNSUBSCRIBE/END/QUIT
+// too — and anything not matched here falls through to the agent (or the welcome
+// question), which reads as "I asked to stop and it kept texting me", so treat
+// them alike. CANCEL isn't one: on SeatSnipe it usually means "cancel my watch",
+// so the agent asks what to cancel.
+export const OPT_OUT_WORDS = ['STOP', 'UNSUBSCRIBE', 'END', 'QUIT', 'STOPALL', 'REVOKE', 'OPTOUT', 'OPT OUT']
+
+// Sent once, when someone opts out, so a student who meant something else knows
+// what happened and how to undo it
+export const OPT_OUT_REPLY = "You won't get any more texts. Text START if that was a mistake."
 
 /** `upper` is the trimmed text in upper case. */
 export function isOptOut(upper: string): boolean {
