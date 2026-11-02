@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { sendMessage } from '@/lib/bluebubbles'
 import { redis } from '@/lib/redis'
 import { scheduleFollowUp } from '@/lib/queue'
+import { appendAssistantMessage } from '@/lib/conversation'
 
 export const runtime = 'nodejs'
 export const maxDuration = 30
@@ -89,18 +90,7 @@ export async function POST(req: NextRequest) {
     })
 
     // Append to Conversation JSON so agent has context when user replies
-    const convo = await prisma.conversation.findUnique({ where: { userId: user.id } })
-    if (convo) {
-      const msgs = (convo.messages as Array<{ role: string; content: unknown }>) ?? []
-      const updated = [
-        ...msgs,
-        { role: 'assistant', content: `(location trigger fired: ${reminder.message})` },
-      ]
-      await prisma.conversation.update({
-        where: { userId: user.id },
-        data: { messages: updated as object[] },
-      })
-    }
+    await appendAssistantMessage(user.id, `(location trigger fired: ${reminder.message})`)
 
     // Wire into escalation nag flow if persistent
     if (reminder.persistent) {
