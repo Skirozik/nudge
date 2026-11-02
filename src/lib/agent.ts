@@ -542,8 +542,7 @@ SEAT WATCH RULES:
 - If the user says "got it", "i'm in", "i got in", "i registered", or similar after an alert, call cancel_watch with fulfilled=true. Celebrate briefly.
 - Max 5 active watches per user. If watch_course returns an error about the limit, tell them clearly.
 - A watch retires after 3 seat alerts. list_watches marks those with retired=true — say that one's done and offer to turn it back on (call watch_course again with the same course code and CRN). Don't describe a retired watch as still active.
-- Pricing, only when they ask: watches set up before Nov 20, 2026 are free for the whole semester, including turning the same section back on. From Nov 20, a new class will cost $5, and that covers every section of that class for the semester. A new section costs $5 even in a class they already watch for free. Reminders are free.
-- Payment isn't set up yet, so never ask anyone to pay or send a payment link. For other pricing questions (refunds, discounts, referrals, how to pay), say those details will be shared before Nov 20. Don't make any up.
+- Pricing, only when they ask: SeatSnipe is free this semester. Watches, turning one back on, and reminders all cost nothing. Never ask anyone to pay or send a payment link, and don't make up plans for later semesters.
 ${whyTheyCame ? `\n${whyTheyCame}\n` : ''}
 LOCATION REMINDERS:
 - "when I get home / arrive at / get to [place]" → set_location_reminder

@@ -1,5 +1,4 @@
 import { SCHOOLS, liveSchools } from '@/lib/schools'
-import { paidFromLabel } from '@/lib/payments/paidFrom'
 import { SEATSNIPE_HANDLE, seatsnipeSmsLink } from '@/lib/seatsnipeBrand'
 
 // "GSU", "GSU and Georgia Tech", "Georgia Tech, UGA and Kennesaw State"
@@ -40,7 +39,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function SeatSnipeHome() {
-  const date = paidFromLabel()
   const live = liveSchools()
   const soon = SCHOOLS.filter((s) => !live.some((l) => l.id === s.id))
 
@@ -65,8 +63,8 @@ export default function SeatSnipeHome() {
           CRN. The first time, SeatSnipe asks which school you go to.
         </p>
         <p>
-          <span className="text-white font-semibold">2. Pay $5 for the class.</span> The watch starts as soon as you
-          pay.
+          <span className="text-white font-semibold">2. Pick your sections.</span> SeatSnipe texts back the sections
+          with live seat counts. Reply with the ones you want and the watch starts right away.
         </p>
         <p>
           <span className="text-white font-semibold">3. Get the text.</span> When a seat opens, register on your
@@ -74,25 +72,11 @@ export default function SeatSnipeHome() {
         </p>
       </Section>
 
-      <Section title="$5 per class">
+      <Section title="Free this semester">
+        <p>SeatSnipe is free for the spring semester. No app, no account, nothing to pay.</p>
         <p>
-          One payment covers every section of that class until drop/add ends. Switching sections or turning a watch
-          back on doesn&apos;t cost more.
-        </p>
-        <p>
-          Watches set up before {date} stay free all semester, and so does turning the same section back on. A new
-          section costs $5, even in a class you were watching for free.
-        </p>
-        <p>
-          No refunds. If no seat opens for a class you paid for before drop/add ends, your next class is free. Free
-          classes last until the end of the next semester, and SeatSnipe asks before using one.
-        </p>
-      </Section>
-
-      <Section title="Free classes from friends">
-        <p>
-          Text <span className="text-white font-semibold">LINK</span> to get your own link. When a friend texts
-          SeatSnipe from it and pays for their first class, you get a free class. Up to 3 a semester.
+          During the day it checks your school&apos;s live seat data about every 90 seconds, and watches run until
+          your school&apos;s drop/add period ends.
         </p>
       </Section>
 

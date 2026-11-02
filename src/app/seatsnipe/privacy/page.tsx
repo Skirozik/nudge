@@ -11,24 +11,18 @@ export default function Privacy() {
         <li>The phone number or Apple ID email you text from.</li>
         <li>The texts you send SeatSnipe and the texts it sends you.</li>
         <li>Your school, timezone, and the classes and sections you watch.</li>
-        <li>
-          Payment records: what you paid for, how much and when. Stripe handles your card, and SeatSnipe never sees or
-          stores your card number.
-        </li>
-        <li>Free classes and referrals: who referred you, and who you referred.</li>
       </ul>
 
       <h2>What it&apos;s used for</h2>
       <p>
-        Running SeatSnipe: understanding your texts, watching your classes, texting you alerts and replies, taking
-        payments, and stopping abuse. Your info isn&apos;t sold, and it isn&apos;t used for ads.
+        Running SeatSnipe: understanding your texts, watching your classes, texting you alerts and replies, and
+        stopping abuse. Your info isn&apos;t sold, and it isn&apos;t used for ads.
       </p>
 
       <h2>Who else handles it</h2>
       <ul>
         <li>Apple carries the texts over iMessage, which SeatSnipe sends and receives on its own Mac.</li>
         <li>Anthropic&apos;s Claude reads your texts to understand them and write replies.</li>
-        <li>Stripe takes payments.</li>
         <li>Vercel, Neon and Upstash host the app and store its data.</li>
       </ul>
       <p>
@@ -41,7 +35,7 @@ export default function Privacy() {
         <li>Text STOP to stop all texts.</li>
         <li>
           Email <a href={`mailto:${SEATSNIPE_SUPPORT_EMAIL}`}>{SEATSNIPE_SUPPORT_EMAIL}</a> to see or delete what
-          SeatSnipe has about you. Payment records may be kept as long as tax rules require.
+          SeatSnipe has about you.
         </li>
       </ul>
 
