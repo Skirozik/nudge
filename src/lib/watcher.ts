@@ -8,7 +8,7 @@ import { liveSchools, termWatchEnd, type LiveSchool } from './schools'
 const OVERNIGHT_START = 1  // 1am local
 const OVERNIGHT_END   = 6  // 6am local
 
-const NORMAL_MS   = 300_000   // 5 min
+const NORMAL_MS   = 90_000    // ~90s daytime
 const SURGE_MS    = 75_000    // 60–90s midpoint
 const OVERNIGHT_MS = 900_000  // 15 min
 
