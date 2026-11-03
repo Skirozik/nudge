@@ -95,8 +95,8 @@ async function main() {
   }
   for (const [why, n] of reasons) console.log(`  skipped ${n}: ${why} (e.g. line ${skipped.find((s) => s.why.startsWith(why))!.line})`)
   console.log(`  ${new Set(rows.map((r) => r.courseCode)).size} courses, ${new Set(rows.map((r) => r.instructor)).size} instructors`)
-  const badGpa = rows.filter((r) => r.gpa !== null && (r.gpa < 0 || r.gpa > 4.34))
-  if (badGpa.length) console.log(`  ${badGpa.length} sections have a course average outside 0–4.33, e.g. CRN ${badGpa[0].crn}: ${badGpa[0].gpa}`)
+  const noGpa = rows.filter((r) => r.gpa === null && r.a + r.b + r.c + r.d + r.f + r.wf > 0)
+  if (noGpa.length) console.log(`  ${noGpa.length} graded sections have no usable average (blank or above 4.33), e.g. CRN ${noGpa[0].crn} ${noGpa[0].courseCode}`)
   console.log('  first rows:')
   for (const r of rows.slice(0, 3)) console.log(`    ${JSON.stringify(r)}`)
   checkDfw(rows)

@@ -111,6 +111,13 @@ function decimal(raw: string | undefined): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+// A+ is GSU's top grade at 4.33. Law sections report 4.5, a scale students can't compare.
+const MAX_GPA = 4.33
+
+function gpaOrNull(n: number | null): number | null {
+  return n !== null && n >= 0 && n <= MAX_GPA ? n : null
+}
+
 export function readGradeFile(text: string): ParseResult {
   const [headers, ...body] = parseCsv(text)
   if (!headers) throw new Error('Empty file')
@@ -132,7 +139,7 @@ export function readGradeFile(text: string): ParseResult {
       courseCode: normalizeCourse(at('course') ?? ''),
       instructor,
       a, b, c, d, f, w, wf, other,
-      gpa: decimal(at('gpa')),
+      gpa: gpaOrNull(decimal(at('gpa'))),
       filePctDfw: decimal(at('dwf')),
       fileTotal: count(at('total')),
     })

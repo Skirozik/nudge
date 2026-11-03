@@ -51,6 +51,11 @@ describe('readGradeFile', () => {
     expect(skipped[0].line).toBe(2)
   })
 
+  it("drops an average above GSU's 4.33 scale, like LAW 6030E's 4.5", () => {
+    const { rows } = readGradeFile(`${HEADERS}\n15944,LAW 6030E,"Doe, Jane",2,0,0,0,0,0,2,0.0,0,4.5,0,2,T`)
+    expect(rows[0].gpa).toBeNull()
+  })
+
   it('treats a blank count as zero and a blank average as unknown', () => {
     const { rows } = readGradeFile(`${HEADERS}\n1,CSC 1301,"Jones, Ann",30,,,,,,,,,,,30,T`)
     expect(rows[0]).toMatchObject({ a: 30, b: 0, gpa: null })
