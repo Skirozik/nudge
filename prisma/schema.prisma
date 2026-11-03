@@ -337,3 +337,34 @@ model Referral {
 
   @@unique([referrerId, semester, slot])
 }
+
+// ── Grade history ──────────────────────────────────────────────────────────
+// One row per section per past term, from the grade distributions a school
+// publishes (GSU: dssapex.gsu.edu). scripts/load-grades.ts loads them.
+
+model GradeSection {
+  id         String   @id @default(cuid())
+  school     String
+  // Banner term code, like "202601"
+  term       String
+  crn        String
+  // "MATH 2212"
+  courseCode String
+  // As the grade file spells it; matched to Banner's by sameInstructor()
+  instructor String
+  a          Int
+  b          Int
+  c          Int
+  d          Int
+  f          Int
+  w          Int
+  wf         Int
+  // Audits, incompletes and pass/fail: not in the GPA or the DFW rate
+  other      Int
+  // The file's own course average (plus/minus scale). Null when no one got a letter grade
+  gpa        Float?
+  createdAt  DateTime @default(now())
+
+  @@unique([school, term, crn])
+  @@index([school, courseCode, term])
+}
