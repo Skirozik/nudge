@@ -2,6 +2,7 @@ import { prisma } from './prisma'
 import { bannerFor } from './banner'
 import { createWatch, logMetric } from './watches'
 import { getSchool, isLive, liveSchools, resolveSchool } from './schools'
+import { gradesByInstructor } from './grades/stats'
 
 /** Sent when a student asks for a watch before picking a school. */
 export const NEED_SCHOOL_MESSAGE = 'You need to choose your school first before I can watch a class for you.'
@@ -91,14 +92,19 @@ export async function watchCourse(
   }
 
   // No CRN specified — return section list for user to pick
+  const grades = await gradesByInstructor(school.id, sections[0].courseCode, activeTerm, sections.map((s) => s.instructor))
   return {
     school: school.shortName,
-    sections: sections.map((s, i) => ({
-      index: i + 1,
-      crn: s.crn,
-      label: s.sectionLabel,
-      seats: s.seatsAvailable,
-    })),
+    sections: sections.map((s, i) => {
+      const g = s.instructor ? grades.get(s.instructor) : undefined
+      return {
+        index: i + 1,
+        crn: s.crn,
+        label: s.sectionLabel,
+        seats: s.seatsAvailable,
+        ...(g && { professorGrades: g }),
+      }
+    }),
   }
 }
 

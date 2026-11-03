@@ -12,11 +12,15 @@ vi.mock('./watches', () => ({
 vi.mock('./banner', () => ({
   bannerFor: vi.fn(),
 }))
+vi.mock('./grades/stats', () => ({
+  gradesByInstructor: vi.fn(async () => new Map()),
+}))
 
 import { watchCourse, setSchool, NEED_SCHOOL_MESSAGE, PENDING_WATCH_TTL_MS } from './seatsnipeTools'
 import { prisma } from './prisma'
 import { createWatch, logMetric } from './watches'
 import { bannerFor } from './banner'
+import { gradesByInstructor } from './grades/stats'
 import { SCHOOLS, type School } from './schools'
 
 const findUser = prisma.user.findUnique as ReturnType<typeof vi.fn>
@@ -24,10 +28,11 @@ const updateUser = prisma.user.update as ReturnType<typeof vi.fn>
 const mockCreateWatch = createWatch as ReturnType<typeof vi.fn>
 const mockLogMetric = logMetric as ReturnType<typeof vi.fn>
 const mockBannerFor = bannerFor as ReturnType<typeof vi.fn>
+const mockGrades = gradesByInstructor as ReturnType<typeof vi.fn>
 
 const SECTIONS = [
-  { crn: '90474', courseCode: 'CSC 1301', sectionLabel: 'Sec 010, MWF 9–9:50, Jones', seatsAvailable: 0, maximumEnrollment: 40 },
-  { crn: '90476', courseCode: 'CSC 1301', sectionLabel: 'Sec 002, MWF 9–9:50, Smith', seatsAvailable: 3, maximumEnrollment: 40 },
+  { crn: '90474', courseCode: 'CSC 1301', sectionLabel: 'Sec 010, MWF 9–9:50, Jones, Ann', seatsAvailable: 0, maximumEnrollment: 40, instructor: 'Jones, Ann' },
+  { crn: '90476', courseCode: 'CSC 1301', sectionLabel: 'Sec 002, MWF 9–9:50, Smith, Bo', seatsAvailable: 3, maximumEnrollment: 40, instructor: 'Smith, Bo' },
 ]
 const fakeBanner = {
   getActiveTerm: vi.fn(async () => '202701'),
@@ -89,6 +94,19 @@ describe('watchCourse guardrail', () => {
 
     expect(result.sections).toHaveLength(2)
     expect(mockCreateWatch).not.toHaveBeenCalled()
+  })
+
+  it("puts each professor's grade history on their own sections only", async () => {
+    findUser.mockResolvedValueOnce({ school: 'gsu', source: null })
+    const jones = { avgGpa: 3.1, dfwRate: 0.16, students: 412, sections: 9, since: 'Spring 2024' }
+    mockGrades.mockResolvedValueOnce(new Map([['Jones, Ann', jones]]))
+
+    const result = await watchCourse('u1', { query: 'CSC 1301' })
+
+    expect(mockGrades).toHaveBeenCalledWith('gsu', 'CSC 1301', '202701', ['Jones, Ann', 'Smith, Bo'])
+    const [first, second] = result.sections as Array<Record<string, unknown>>
+    expect(first.professorGrades).toEqual(jones)
+    expect(second).not.toHaveProperty('professorGrades')
   })
 })
 
