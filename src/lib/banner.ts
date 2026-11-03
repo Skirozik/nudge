@@ -89,13 +89,29 @@ export function primaryInstructor(faculty: RawSection['faculty']): string | null
   return name || null
 }
 
+/** "Grinshpon, Mark (Mark) S." → "Grinshpon, Mark S.", "Rusodimos, Iason ." → "Rusodimos, Iason" */
+export function displayInstructor(name: string): string {
+  return name
+    .replace(/,\s*([^\s(]+)\s*\(\1\)/i, ', $1')
+    .replace(/\s+\.(?=\s|$)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Banner's "0930" → "9:30am", "1400" → "2:00pm" */
+export function clockTime(hhmm: string): string {
+  if (!/^\d{4}$/.test(hhmm)) return hhmm
+  const h = Number(hhmm.slice(0, 2))
+  return `${h % 12 || 12}:${hhmm.slice(2)}${h < 12 ? 'am' : 'pm'}`
+}
+
 export function parse(raw: RawSection): SectionInfo {
   const subject = raw.subject ?? ''
   const number = raw.courseNumber ?? ''
   const seq = raw.sequenceNumber ?? ''
   const crn = raw.courseReferenceNumber ?? ''
   const instructorOfRecord = primaryInstructor(raw.faculty)
-  const instructor = instructorOfRecord ?? 'Staff'
+  const instructor = instructorOfRecord ? displayInstructor(instructorOfRecord) : 'Staff'
   const mt = raw.meetingsFaculty?.[0]?.meetingTime
   let days = ''
   let time = 'TBA'
@@ -107,7 +123,7 @@ export function parse(raw: RawSection): SectionInfo {
     if (mt.thursday) d.push('Th')
     if (mt.friday) d.push('F')
     days = d.join('')
-    if (mt.beginTime && mt.endTime) time = `${mt.beginTime}–${mt.endTime}`
+    if (mt.beginTime && mt.endTime) time = `${clockTime(mt.beginTime)}–${clockTime(mt.endTime)}`
   }
   return {
     crn,

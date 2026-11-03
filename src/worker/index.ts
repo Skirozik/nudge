@@ -610,11 +610,11 @@ const worker = new Worker(
       // poll and can read 0 by the time this job runs.
       const isFinal = alertNumber >= MAX_ALERTS_PER_WATCH
       const tail = isFinal
-        ? ` (that's ${alertNumber} of ${MAX_ALERTS_PER_WATCH} — this watch is done. text "watch ${watch.courseCode} ${watch.crn}" to turn it back on.)`
+        ? ` (that's ${alertNumber} of ${MAX_ALERTS_PER_WATCH}, so this watch is done. text "watch ${watch.courseCode} ${watch.crn}" to turn it back on.)`
         : ''
       const registerSite = getSchool(watch.school)?.banner?.registerSite
       const registerHint = registerSite ? `Register at ${registerSite} before it fills up.` : 'Register before it fills up.'
-      const msg = `🚨 Seat opened in ${courseLabel} — ${seats} seat${seats === 1 ? '' : 's'} available! ${registerHint}${tail}`
+      const msg = `🚨 Seat opened in ${courseLabel}, ${seats} seat${seats === 1 ? '' : 's'} available! ${registerHint}${tail}`
 
       // alertCount/lastAlertAt were already written by claimAlertSlot.
       await sendMessage(watch.user.phone, msg)
