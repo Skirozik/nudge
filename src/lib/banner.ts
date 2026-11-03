@@ -55,7 +55,7 @@ interface RawSection {
   sequenceNumber?: string
   seatsAvailable?: number
   maximumEnrollment?: number
-  faculty?: Array<{ displayName?: string }>
+  faculty?: Array<{ displayName?: string; primaryIndicator?: boolean }>
   meetingsFaculty?: Array<{
     meetingTime?: {
       beginTime?: string
@@ -75,14 +75,27 @@ export interface SectionInfo {
   sectionLabel: string
   seatsAvailable: number
   maximumEnrollment: number
+  // Instructor of record as Banner spells it ("Miller, Joshua G."), null for Staff
+  instructor: string | null
 }
 
-function parse(raw: RawSection): SectionInfo {
+/**
+ * The instructor of record. Banner doesn't list them first: a co-teacher or TA
+ * often comes before the one marked primary.
+ */
+export function primaryInstructor(faculty: RawSection['faculty']): string | null {
+  const pick = faculty?.find((f) => f.primaryIndicator) ?? faculty?.[0]
+  const name = pick?.displayName?.replace(/\s+/g, ' ').trim()
+  return name || null
+}
+
+export function parse(raw: RawSection): SectionInfo {
   const subject = raw.subject ?? ''
   const number = raw.courseNumber ?? ''
   const seq = raw.sequenceNumber ?? ''
   const crn = raw.courseReferenceNumber ?? ''
-  const instructor = raw.faculty?.[0]?.displayName ?? 'Staff'
+  const instructorOfRecord = primaryInstructor(raw.faculty)
+  const instructor = instructorOfRecord ?? 'Staff'
   const mt = raw.meetingsFaculty?.[0]?.meetingTime
   let days = ''
   let time = 'TBA'
@@ -104,6 +117,7 @@ function parse(raw: RawSection): SectionInfo {
     // read as "full" rather than poisoning the 0→N edge detection.
     seatsAvailable: Math.max(0, raw.seatsAvailable ?? 0),
     maximumEnrollment: raw.maximumEnrollment ?? 0,
+    instructor: instructorOfRecord,
   }
 }
 
