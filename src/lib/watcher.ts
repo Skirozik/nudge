@@ -4,6 +4,7 @@ import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_
 import { scheduleSeatAlert } from './queue'
 import { isSurgeMode } from './redis'
 import { liveSchools, termWatchEnd, type LiveSchool } from './schools'
+import { normalizePhone } from './phone'
 
 const OVERNIGHT_START = 1  // 1am local
 const OVERNIGHT_END   = 6  // 6am local
@@ -11,6 +12,7 @@ const OVERNIGHT_END   = 6  // 6am local
 const NORMAL_MS   = 90_000    // ~90s daytime
 const SURGE_MS    = 75_000    // 60–90s midpoint
 const OVERNIGHT_MS = 900_000  // 15 min
+const PRIORITY_MS = 25_000    // the admin's own watches, day and night
 
 const CIRCUIT_THRESHOLD = 5
 const CIRCUIT_PAUSE_MS  = 10 * 60_000  // 10 min
@@ -90,16 +92,28 @@ type PolledWatch = {
   user: { phone: string }
 }
 
+/**
+ * The admin's watches run in their own fast lane and nowhere else, so no watch
+ * is ever polled by two loops at once. Without ADMIN_PHONE there is no fast lane.
+ */
+export type Lane = 'normal' | 'priority'
+
+export function laneFilter(lane: Lane, adminPhone: string | undefined): Record<string, unknown> | null {
+  const phone = adminPhone?.trim() ? normalizePhone(adminPhone) : null
+  if (!phone) return lane === 'normal' ? {} : null
+  return lane === 'priority' ? { user: { phone } } : { NOT: { user: { phone } } }
+}
+
 /** Per-school loop state. */
 interface LoopState {
   consecutiveErrors: number
 }
 
-async function pollAll(school: LiveSchool, state: LoopState): Promise<void> {
+async function pollAll(school: LiveSchool, state: LoopState, lane: Record<string, unknown>): Promise<void> {
   const watches = await prisma.watch.findMany({
     // The alertCount bound is a backstop: claimAlertSlot flips spent watches to
     // PAUSED, but this also drops any left ACTIVE by an older build or a crash.
-    where: { school: school.id, status: 'ACTIVE', alertCount: { lt: MAX_ALERTS_PER_WATCH } },
+    where: { school: school.id, status: 'ACTIVE', alertCount: { lt: MAX_ALERTS_PER_WATCH }, ...lane },
     select: { id: true, userId: true, school: true, term: true, crn: true, courseCode: true, lastSeats: true, lastAlertAt: true, alertCount: true, user: { select: { phone: true } } },
   })
 
@@ -166,16 +180,18 @@ async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches: Polled
 
 function startSchoolLoop(
   school: LiveSchool,
-  sendMessage: (phone: string, msg: string) => Promise<void>
+  sendMessage: (phone: string, msg: string) => Promise<void>,
+  lane: Lane,
+  filter: Record<string, unknown>
 ): void {
   const state: LoopState = { consecutiveErrors: 0 }
-  const tag = `[watcher:${school.id}]`
+  const tag = lane === 'normal' ? `[watcher:${school.id}]` : `[watcher:${school.id}:priority]`
 
   async function loop(): Promise<void> {
     while (true) {
-      // Check auto-expiry
+      // Check auto-expiry (once per school, in the normal lane)
       const termEnd = termWatchEnd(school)
-      if (termEnd && Date.now() > termEnd.getTime()) {
+      if (lane === 'normal' && termEnd && Date.now() > termEnd.getTime()) {
         try {
           await expireWatches(school, sendMessage)
         } catch (err) {
@@ -193,15 +209,18 @@ function startSchoolLoop(
       }
 
       try {
-        await pollAll(school, state)
+        await pollAll(school, state, filter)
       } catch (err) {
         console.error(`${tag} poll error:`, err)
         state.consecutiveErrors++
       }
 
-      try { await logMetric('poller_heartbeat', null, { consecutiveErrors: state.consecutiveErrors, school: school.id }) } catch {}
+      // The dead-man check reads the normal lane's heartbeat
+      if (lane === 'normal') {
+        try { await logMetric('poller_heartbeat', null, { consecutiveErrors: state.consecutiveErrors, school: school.id }) } catch {}
+      }
 
-      const interval = await getInterval(school.id).catch(() => jitter(NORMAL_MS))
+      const interval = lane === 'priority' ? jitter(PRIORITY_MS) : await getInterval(school.id).catch(() => jitter(NORMAL_MS))
       await sleep(interval)
     }
   }
@@ -227,9 +246,14 @@ export function startWatcherLoop(sendMessage: (phone: string, msg: string) => Pr
     console.warn('[watcher] no live schools — check ENABLED_SCHOOLS')
     return
   }
+  const priority = laneFilter('priority', process.env.ADMIN_PHONE)
   for (const school of schools) {
     console.log(`[watcher] starting loop for ${school.shortName}`)
-    startSchoolLoop(school, sendMessage)
+    startSchoolLoop(school, sendMessage, 'normal', laneFilter('normal', process.env.ADMIN_PHONE)!)
+    if (priority) {
+      console.log(`[watcher] starting priority loop for ${school.shortName} (admin watches, ~${PRIORITY_MS / 1000}s)`)
+      startSchoolLoop(school, sendMessage, 'priority', priority)
+    }
   }
 }
 
