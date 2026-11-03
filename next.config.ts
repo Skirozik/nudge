@@ -11,11 +11,7 @@ const nextConfig: NextConfig = {
     return {
       beforeFiles: [
         { source: "/", has: SEATSNIPE_HOST, destination: "/seatsnipe" },
-        { source: "/:page(terms|privacy|paid)", has: SEATSNIPE_HOST, destination: "/seatsnipe/:page" },
-        // Referral links like getseatsnipe.com/KX7B2Q. Every 6-character path
-        // lands here and the page 404s anything that isn't a code, so don't
-        // give a SeatSnipe page a 6-letter name.
-        { source: "/:code([0-9A-Za-z]{6})", has: SEATSNIPE_HOST, destination: "/seatsnipe/r/:code" },
+        { source: "/:page(terms|privacy)", has: SEATSNIPE_HOST, destination: "/seatsnipe/:page" },
       ],
     };
   },

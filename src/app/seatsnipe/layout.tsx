@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { Inter_Tight } from 'next/font/google'
 import Link from 'next/link'
 import { SEATSNIPE_SUPPORT_EMAIL, SEATSNIPE_URL } from '@/lib/seatsnipeBrand'
+import { WRAP } from './wrap'
 
 const interTight = Inter_Tight({
   subsets: ['latin'],
@@ -10,7 +11,8 @@ const interTight = Inter_Tight({
   display: 'swap',
 })
 
-const DESCRIPTION = 'Text SeatSnipe a full class and it texts you when a seat opens. Works on iPhone.'
+const DESCRIPTION =
+  "Text SeatSnipe a full class and it texts you when a seat opens, with each professor's grade history at GSU. Free this semester on iPhone."
 
 // The root layout's metadata is Nudge's, and iMessage link previews read this
 export const metadata: Metadata = {
@@ -26,7 +28,8 @@ export default function SeatSnipeLayout({ children }: { children: React.ReactNod
       className={`${interTight.variable} min-h-screen bg-[#080808] text-white flex flex-col antialiased`}
       style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}
     >
-      <nav className="px-6 sm:px-10 h-16 flex items-center">
+      {/* w-full: a flex-column child with mx-auto would shrink to its text and center */}
+      <nav className={`${WRAP} w-full h-16 flex items-center`}>
         <Link href="/" className="text-[15px] font-semibold tracking-[-0.01em]">
           seatsnipe
         </Link>
@@ -34,8 +37,8 @@ export default function SeatSnipeLayout({ children }: { children: React.ReactNod
 
       <main className="flex-1">{children}</main>
 
-      <footer className="px-6 sm:px-10 py-10 border-t border-[#1E1E1E] text-[13px] text-[#8E8E93]">
-        <div className="max-w-[720px] mx-auto space-y-3">
+      <footer className="py-10 border-t border-[#1E1E1E] text-[13px] text-[#8E8E93]">
+        <div className={`${WRAP} space-y-3`}>
           <p>
             Questions? Email{' '}
             <a href={`mailto:${SEATSNIPE_SUPPORT_EMAIL}`} className="text-white/80 hover:text-white">

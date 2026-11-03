@@ -2,12 +2,23 @@
 
 import { useEffect, useRef, type RefObject } from 'react'
 
+// "stamp" is the centered time line iMessage shows after a gap, like "2:14 AM"
+export interface DemoMessage {
+  from: 'me' | 'them' | 'stamp'
+  text: string
+}
+
 interface IPhoneDemoProps {
   theme?: 'dark' | 'light'
   externalChatRef?: RefObject<HTMLElement | null>
+  script?: DemoMessage[]
+  contact?: string
+  startTime?: string
+  // The idle float suits Nudge's hero; SeatSnipe keeps the phone still
+  still?: boolean
 }
 
-const SCRIPT = [
+const SCRIPT: DemoMessage[] = [
   { from: 'me',   text: 'i have a bio exam friday at 8am' },
   { from: 'them', text: 'bio exam friday 8am — want me to really nag you on this one?' },
   { from: 'me',   text: 'yes lol' },
@@ -22,11 +33,22 @@ const T = {
   fade:         420,
 }
 
-export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDemoProps = {}) {
+export default function IPhoneDemo({
+  theme = 'dark',
+  externalChatRef,
+  script = SCRIPT,
+  contact = 'Nudge',
+  startTime = '11:23 AM',
+  still = false,
+}: IPhoneDemoProps = {}) {
   const internalChatRef = useRef<HTMLElement>(null)
+  // Read through a ref so a new array from a re-render doesn't restart the loop
+  const scriptRef = useRef(script)
+  scriptRef.current = script
 
   useEffect(() => {
     if (externalChatRef) return // animation managed by parent
+    const SCRIPT = scriptRef.current
 
     const chatOrNull = internalChatRef.current
     if (!chatOrNull) return
@@ -82,13 +104,28 @@ export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDe
       afterRow.insertAdjacentElement('afterend', make(`<div class="delivered">Delivered</div>`))
     }
 
+    function addStamp(time: string) {
+      const stamp = make(`<div class="day-stamp"><b>Today</b> <span></span></div>`)
+      stamp.querySelector('span')!.textContent = time
+      chat.appendChild(stamp)
+      scrollDown()
+    }
+
     async function playOnce() {
-      chat.innerHTML = `<div class="day-stamp"><b>Today</b> 11:23 AM</div>`
+      chat.innerHTML = ''
+      addStamp(startTime)
       let prev: string | null = null
 
       for (let i = 0; i < SCRIPT.length; i++) {
         if (stopped) return
         const m = SCRIPT[i]
+        if (m.from === 'stamp') {
+          await sleep(T.betweenMsgs)
+          if (stopped) return
+          addStamp(m.text)
+          prev = null
+          continue
+        }
         const next = SCRIPT[i + 1]
         const groupStart = m.from !== prev
         const tail = !next || next.from !== m.from
@@ -133,12 +170,12 @@ export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDe
       chatOrNull.innerHTML = ''
       chatOrNull.classList.remove('clearing')
     }
-  }, [externalChatRef])
+  }, [externalChatRef, startTime])
 
   return (
     <>
-      <div className="nudge-demo" data-theme={theme}>
-        <div className="iphone" role="img" aria-label="iPhone showing a conversation with Nudge">
+      <div className="nudge-demo" data-theme={theme} data-still={still || undefined}>
+        <div className="iphone" role="img" aria-label={`iPhone showing a conversation with ${contact}`}>
           <span className="btn action" />
           <span className="btn vol-up" />
           <span className="btn vol-down" />
@@ -179,8 +216,8 @@ export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDe
                     </svg>3
                   </span>
                   <div className="contact">
-                    <div className="avatar">N</div>
-                    <span className="name">Nudge
+                    <div className="avatar">{contact[0]}</div>
+                    <span className="name">{contact}
                       <svg width="6" height="9" viewBox="0 0 6 9" fill="none">
                         <path d="M1 1 L5 4.5 L1 8" stroke="#8D8D93" strokeWidth="1.6"
                               strokeLinecap="round" strokeLinejoin="round"/>
@@ -468,6 +505,7 @@ export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDe
           letter-spacing: -.1px;
           border-radius: 18px;
           word-wrap: break-word;
+          white-space: pre-line;
           color: #FFF;
         }
         .nudge-demo .me   .bubble { background: var(--sent); }
@@ -607,6 +645,8 @@ export default function IPhoneDemo({ theme = 'dark', externalChatRef }: IPhoneDe
           border-radius: 3px;
           background: #6E6E73;
         }
+
+        .nudge-demo[data-still] .iphone { animation: none; }
 
         @media (prefers-reduced-motion: reduce) {
           .nudge-demo .iphone { animation: none; }

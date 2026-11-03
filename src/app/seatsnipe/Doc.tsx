@@ -1,8 +1,10 @@
+import { WRAP } from './wrap'
+
 // Shared layout for the terms and privacy pages
 export function Doc({ title, updated, children }: { title: string; updated: string; children: React.ReactNode }) {
   return (
-    <article className="px-6 sm:px-10 pt-10 pb-20">
-      <div className="max-w-[720px] mx-auto">
+    <article className={`${WRAP} pt-10 pb-20`}>
+      <div className="max-w-[680px]">
         <h1 className="font-[family-name:var(--font-display)] font-black text-[40px] sm:text-[52px] leading-none tracking-[-0.04em] mb-3">
           {title}
         </h1>
