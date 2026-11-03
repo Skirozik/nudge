@@ -17,13 +17,14 @@ export interface GradeRow {
   f: number
   w: number
   wf: number
+  other: number
   gpa: number | null
 }
 
 export interface GradeStats {
   // Average GPA of their letter grades in this course (plus/minus scale)
   avgGpa: number
-  // Share who got a D or F or withdrew
+  // GSU's D/W/F rate: D, F, W and WF over everyone enrolled, Other included
   dfwRate: number
   students: number
   sections: number
@@ -47,7 +48,7 @@ export function summarize(rows: GradeRow[]): GradeStats | null {
   let gpaWeight = 0
   let gpaSum = 0
   let dfw = 0
-  let finished = 0
+  let enrolled = 0
   const sections = rows.filter((r) => {
     const letters = r.a + r.b + r.c + r.d + r.f + r.wf
     if (!letters && !r.w) return false
@@ -57,13 +58,13 @@ export function summarize(rows: GradeRow[]): GradeStats | null {
       gpaWeight += letters
     }
     dfw += r.d + r.f + r.w + r.wf
-    finished += letters + r.w
+    enrolled += letters + r.w + r.other
     return true
   })
   if (graded < MIN_STUDENTS || !gpaWeight) return null
   return {
     avgGpa: Math.round((gpaSum / gpaWeight) * 100) / 100,
-    dfwRate: Math.round((dfw / finished) * 100) / 100,
+    dfwRate: Math.round((dfw / enrolled) * 100) / 100,
     students: graded,
     sections: sections.length,
     since: termLabel(sections.map((r) => r.term).sort()[0]),
@@ -86,7 +87,7 @@ export async function gradesByInstructor(
   try {
     const rows = await prisma.gradeSection.findMany({
       where: { school, courseCode, term: { gte: sinceTerm(activeTerm), lt: activeTerm } },
-      select: { term: true, instructor: true, a: true, b: true, c: true, d: true, f: true, w: true, wf: true, gpa: true },
+      select: { term: true, instructor: true, a: true, b: true, c: true, d: true, f: true, w: true, wf: true, other: true, gpa: true },
     })
     for (const name of names) {
       const stats = summarize(rows.filter((r) => sameInstructor(name, r.instructor)))

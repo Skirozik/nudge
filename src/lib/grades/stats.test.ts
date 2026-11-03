@@ -12,7 +12,7 @@ const findMany = prisma.gradeSection.findMany as ReturnType<typeof vi.fn>
 const row = (over: Partial<GradeRow> = {}): GradeRow => ({
   term: '202501',
   instructor: 'Miller, Joshua',
-  a: 10, b: 8, c: 4, d: 1, f: 1, w: 2, wf: 0,
+  a: 10, b: 8, c: 4, d: 1, f: 1, w: 2, wf: 0, other: 0,
   gpa: 3.0,
   ...over,
 })
@@ -28,10 +28,16 @@ describe('summarize', () => {
     expect(s?.sections).toBe(2)
   })
 
-  it('counts D, F, W and WF over everyone who finished or withdrew', () => {
-    // (1 + 1 + 2 + 1) / (10 + 8 + 4 + 1 + 1 + 1 + 2)
-    const s = summarize([row({ wf: 1, a: 30 })])
-    expect(s?.dfwRate).toBe(Math.round((5 / 47) * 100) / 100)
+  it("matches GSU's own DWF on a real Spring 2026 section", () => {
+    // ACCT 2102 CRN 10001: (14 + 5 + 0 + 7) / 334 = 7.8%, the file's DWF column
+    const s = summarize([row({ a: 160, b: 106, c: 41, d: 14, f: 5, wf: 0, w: 7, other: 1, gpa: 3.29 })])
+    expect(s?.dfwRate).toBe(0.08)
+    expect(s?.students).toBe(326)
+  })
+
+  it('counts Other in the enrolled total, like GSU does', () => {
+    // (1 + 1 + 2) / (24 graded + 2 W + 14 Other) = 10%
+    expect(summarize([row({ other: 14 })])?.dfwRate).toBe(0.1)
   })
 
   it('names the earliest term counted', () => {
@@ -47,7 +53,7 @@ describe('summarize', () => {
   })
 
   it('skips a section with no grades at all', () => {
-    const empty = row({ a: 0, b: 0, c: 0, d: 0, f: 0, w: 0, wf: 0, gpa: null, term: '202108' })
+    const empty = row({ a: 0, b: 0, c: 0, d: 0, f: 0, w: 0, wf: 0, other: 90, gpa: null, term: '202108' })
     expect(summarize([row({ a: 30 }), empty])?.sections).toBe(1)
   })
 

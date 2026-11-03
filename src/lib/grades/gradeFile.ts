@@ -20,8 +20,9 @@ export interface FileRow {
   wf: number
   other: number
   gpa: number | null
-  // The file's own D/W/F percent, kept only to check our math against
+  // The file's own D/W/F percent and Total, kept only to check our math against
   filePctDfw: number | null
+  fileTotal: number | null
 }
 
 export interface ParseResult {
@@ -75,6 +76,7 @@ const COLUMNS = {
   other: /^OTHER$/,
   gpa: /^CRS\s*AVG$/,
   dwf: /^DWF$/,
+  total: /^TOTAL$/,
 } as const
 
 type Column = keyof typeof COLUMNS
@@ -132,6 +134,7 @@ export function readGradeFile(text: string): ParseResult {
       a, b, c, d, f, w, wf, other,
       gpa: decimal(at('gpa')),
       filePctDfw: decimal(at('dwf')),
+      fileTotal: count(at('total')),
     })
   })
   return { rows, skipped }

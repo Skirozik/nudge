@@ -34,8 +34,21 @@ describe('readGradeFile', () => {
     expect(skipped).toEqual([])
     expect(rows[0]).toEqual({
       crn: '12483', courseCode: 'MATH 2212', instructor: 'Baroonian, Mona',
-      a: 10, b: 8, c: 4, d: 1, f: 1, w: 2, wf: 0, other: 1, gpa: 3.05, filePctDfw: 12.5,
+      a: 10, b: 8, c: 4, d: 1, f: 1, w: 2, wf: 0, other: 1, gpa: 3.05, filePctDfw: 12.5, fileTotal: 27,
     })
+  })
+
+  it('reads a real Spring 2026 row, where a missing average is "-"', () => {
+    const real = 'CRN,Course,Professor,A (90-100),B (80-89),C (70-79),D (60-69),F <60,WF,A- WF,DWF,W,CRS AVG,Other,Total,Instruction Method'
+    const { rows } = readGradeFile(`${real}\n10001,ACCT 2102,"Yorke, Sally",160,106,41,14,5,0,326,7.8%,7,3.29,1,334,T\n10016,ANTH 8065,"Turner-Livermore, Bethany",0,0,0,0,0,0,0,5.9%,1,-,16,17,P`)
+    expect(rows[0]).toMatchObject({ crn: '10001', a: 160, f: 5, wf: 0, w: 7, other: 1, gpa: 3.29, filePctDfw: 7.8, fileTotal: 334 })
+    expect(rows[1]).toMatchObject({ gpa: null, other: 16, fileTotal: 17 })
+  })
+
+  it('skips a blank professor, which the export writes as ","', () => {
+    const { rows, skipped } = readGradeFile(`${HEADERS}\n10059,BA 8510,",",0,0,0,0,0,0,0,0.0%,0,-,520,520,T`)
+    expect(rows).toEqual([])
+    expect(skipped[0].line).toBe(2)
   })
 
   it('treats a blank count as zero and a blank average as unknown', () => {

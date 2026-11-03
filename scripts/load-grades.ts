@@ -22,18 +22,25 @@ function arg(name: string): string | undefined {
   return i > 0 ? process.argv[i + 1] : undefined
 }
 
+// GSU's definition: D, F, W and WF over everyone enrolled, Other included
 function dfwPct(r: FileRow): number | null {
-  const all = r.a + r.b + r.c + r.d + r.f + r.w + r.wf
+  const all = r.a + r.b + r.c + r.d + r.f + r.w + r.wf + r.other
   return all ? ((r.d + r.f + r.w + r.wf) / all) * 100 : null
 }
 
-/** Our D/F/W math against the file's own column, so a wrong definition shows up before loading. */
+/** Our math against the file's own D/W/F and Total columns, so a wrong definition shows up before loading. */
 function checkDfw(rows: FileRow[]): void {
+  const withTotal = rows.filter((r) => r.fileTotal !== null)
+  const badTotal = withTotal.filter((r) => r.a + r.b + r.c + r.d + r.f + r.w + r.wf + r.other !== r.fileTotal)
+  console.log(`Total check: ${withTotal.length - badTotal.length}/${withTotal.length} sections' counts add up to their Total.`)
+  for (const r of badTotal.slice(0, 5)) console.log(`  CRN ${r.crn} ${r.courseCode}: counts don't add up to ${r.fileTotal}`)
+
   const withPct = rows.filter((r) => r.filePctDfw !== null && dfwPct(r) !== null)
   if (!withPct.length) return console.log('D/W/F check: the file has no D/W/F column values to compare.')
   // Some exports write 12.5, some 0.125
   const scale = withPct.every((r) => r.filePctDfw! <= 1) ? 100 : 1
-  const off = withPct.filter((r) => Math.abs(r.filePctDfw! * scale - dfwPct(r)!) > 0.6)
+  // The file rounds to one or two decimals
+  const off = withPct.filter((r) => Math.abs(r.filePctDfw! * scale - dfwPct(r)!) > 0.06)
   console.log(`D/W/F check: ${withPct.length - off.length}/${withPct.length} sections agree with the file's own percent.`)
   for (const r of off.slice(0, 5)) {
     console.log(`  CRN ${r.crn} ${r.courseCode}: file ${(r.filePctDfw! * scale).toFixed(1)}%, ours ${dfwPct(r)!.toFixed(1)}%`)
@@ -104,7 +111,7 @@ async function main() {
   const [deleted, created] = await prisma.$transaction([
     prisma.gradeSection.deleteMany({ where: { school, term } }),
     prisma.gradeSection.createMany({
-      data: rows.map(({ filePctDfw: _pct, ...r }) => ({ ...r, school, term })),
+      data: rows.map(({ filePctDfw: _pct, fileTotal: _total, ...r }) => ({ ...r, school, term })),
       skipDuplicates: true,
     }),
   ])
