@@ -35,9 +35,14 @@ describe('isLive', () => {
   })
 
   it('needs a banner config even when enabled', () => {
-    vi.stubEnv('ENABLED_SCHOOLS', 'gsu,gatech')
-    expect(isLive(getSchool('gatech'))).toBe(false)
+    vi.stubEnv('ENABLED_SCHOOLS', 'gsu,uga')
+    expect(isLive(getSchool('uga'))).toBe(false)
     expect(isLive(getSchool('gsu'))).toBe(true)
+  })
+
+  it('is live once both banner config and ENABLED_SCHOOLS are set', () => {
+    vi.stubEnv('ENABLED_SCHOOLS', 'gsu,gatech')
+    expect(isLive(getSchool('gatech'))).toBe(true)
   })
 
   it('is off when the school is not in ENABLED_SCHOOLS', () => {
@@ -71,5 +76,11 @@ describe('normalizeSubject', () => {
     expect(normalizeSubject('csci', aliases)).toBe('CSC')
     expect(normalizeSubject('Psych', aliases)).toBe('PSYC')
     expect(normalizeSubject('hist', aliases)).toBe('HIST')
+  })
+
+  it('leaves CS alone at Georgia Tech — unlike GSU, CS is already the real code', () => {
+    const aliases = getSchool('gatech')!.banner!.subjectAliases
+    expect(normalizeSubject('cs', aliases)).toBe('CS')
+    expect(normalizeSubject('compsci', aliases)).toBe('CS')
   })
 })
