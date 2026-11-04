@@ -28,10 +28,15 @@ function isOvernight(): boolean {
   return hour >= OVERNIGHT_START && hour < OVERNIGHT_END
 }
 
-async function getInterval(schoolId: string): Promise<number> {
+// pollIntervalMs is a floor on the base interval, applied before jitter, so a
+// school that sets it still gets natural variance but never the fast path.
+// Overnight is left alone on purpose: traffic is already low and GSU's
+// overnight behavior must not change.
+export async function getInterval(school: LiveSchool): Promise<number> {
+  const floor = school.banner.pollIntervalMs
   if (isOvernight()) return jitter(OVERNIGHT_MS)
-  if (await isSurgeMode(schoolId)) return jitter(SURGE_MS)
-  return jitter(NORMAL_MS)
+  if (await isSurgeMode(school.id)) return jitter(floor ? Math.max(SURGE_MS, floor) : SURGE_MS)
+  return jitter(floor ? Math.max(NORMAL_MS, floor) : NORMAL_MS)
 }
 
 /** Watches for one section share a single Banner request. */
@@ -299,7 +304,7 @@ function startSchoolLoop(
         try { await logMetric('poller_heartbeat', null, { consecutiveErrors: state.consecutiveErrors, school: school.id }) } catch {}
       }
 
-      const interval = lane === 'priority' ? jitter(PRIORITY_MS) : await getInterval(school.id).catch(() => jitter(NORMAL_MS))
+      const interval = lane === 'priority' ? jitter(PRIORITY_MS) : await getInterval(school).catch(() => jitter(NORMAL_MS))
       await sleep(interval)
     }
   }

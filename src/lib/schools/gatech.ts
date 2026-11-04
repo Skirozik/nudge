@@ -74,5 +74,8 @@ export const gatech: School = {
       BME: 'BMED',
       CIVIL: 'CEE',
     },
+    // Georgia Tech's instance has rate limited us during testing. A slower
+    // floor on the normal poll lane lowers that risk.
+    pollIntervalMs: 180_000,
   },
 }
