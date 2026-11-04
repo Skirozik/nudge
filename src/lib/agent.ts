@@ -143,10 +143,6 @@ const TOOLS: Anthropic.Tool[] = [
           type: 'string',
           description: 'A CRN (digits only, e.g. "85312") or a course code (e.g. "CSCI 3350")',
         },
-        term: {
-          type: 'string',
-          description: 'Term code in YYYYMM format (e.g. "202608"). Omit to use the current term.',
-        },
       },
       required: ['query'],
     },
@@ -356,7 +352,7 @@ export async function executeTool(
     }
 
     case 'watch_course':
-      return watchCourse(userId, input as { query: string; term?: string })
+      return watchCourse(userId, input as { query: string })
 
     case 'set_school':
       return setSchool(userId, input as { school: string })

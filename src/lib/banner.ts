@@ -92,6 +92,8 @@ export interface SectionInfo {
   takeableSeats: number
   // People on the waitlist
   waitCount: number
+  // The open seats are held for the waitlist, so the section is full to a new student
+  heldForWaitlist: boolean
   maximumEnrollment: number
   // Instructor of record as Banner spells it ("Miller, Joshua G."), null for Staff
   instructor: string | null
@@ -128,9 +130,13 @@ export function clockTime(hhmm: string): string {
  * are held for them: GSU refuses with "Open - Reserved for Wait List" (SOCI 1160,
  * 1 seat, 12 waiting). A cross-listed section also needs room in the shared pool.
  */
-export function takeableSeats(raw: Pick<RawSection, 'seatsAvailable' | 'waitCount' | 'crossListAvailable'>): number {
+export function takeableSeats(
+  raw: Pick<RawSection, 'seatsAvailable' | 'waitCount' | 'crossListAvailable'>,
+  // false for a school whose waitlist doesn't hold seats (BannerConfig.waitlistHoldsSeats)
+  waitlistHoldsSeats = true
+): number {
   const seats = Math.max(0, raw.seatsAvailable ?? 0)
-  if ((raw.waitCount ?? 0) > 0) return 0
+  if (waitlistHoldsSeats && (raw.waitCount ?? 0) > 0) return 0
   return raw.crossListAvailable == null ? seats : Math.min(seats, Math.max(0, raw.crossListAvailable))
 }
 
@@ -149,7 +155,7 @@ export function parseSectionComment(html: string): string | null {
   return text && text !== 'None' ? text : null
 }
 
-export function parse(raw: RawSection): SectionInfo {
+export function parse(raw: RawSection, waitlistHoldsSeats = true): SectionInfo {
   const subject = raw.subject ?? ''
   const number = raw.courseNumber ?? ''
   const seq = raw.sequenceNumber ?? ''
@@ -176,8 +182,9 @@ export function parse(raw: RawSection): SectionInfo {
     // Banner reports negative values for over-enrolled sections; clamp so they
     // read as "full" rather than poisoning the 0→N edge detection.
     seatsShown: Math.max(0, raw.seatsAvailable ?? 0),
-    takeableSeats: takeableSeats(raw),
+    takeableSeats: takeableSeats(raw, waitlistHoldsSeats),
     waitCount: Math.max(0, raw.waitCount ?? 0),
+    heldForWaitlist: waitlistHoldsSeats && (raw.waitCount ?? 0) > 0,
     maximumEnrollment: raw.maximumEnrollment ?? 0,
     instructor: instructorOfRecord,
   }
@@ -189,6 +196,7 @@ export class BannerClient {
   private readonly base: string
   private readonly origin: string
   private readonly tag: string
+  private readonly waitlistHoldsSeats: boolean
 
   // Session state lives on the instance so each school keeps its own login
   private sessionCookies = ''
@@ -208,6 +216,7 @@ export class BannerClient {
     this.base = school.banner.baseUrl.replace(/\/+$/, '')
     this.origin = new URL(this.base).origin
     this.tag = `[banner:${school.id}]`
+    this.waitlistHoldsSeats = school.banner.waitlistHoldsSeats ?? true
   }
 
   normalizeSubject(subject: string): string {
@@ -398,7 +407,7 @@ export class BannerClient {
       const courseNumber = parts[1].toUpperCase()
       const rows = await this.doSearch({ txt_term: term, txt_subject: subject, txt_courseNumber: courseNumber })
       const match = rows.find((r) => r.courseReferenceNumber === crn)
-      return match ? parse(match) : null
+      return match ? parse(match, this.waitlistHoldsSeats) : null
     } catch (err) {
       // A throttle is not "the section is gone". Let the caller skip the cycle.
       if (isThrottled(err)) {
@@ -440,7 +449,7 @@ export class BannerClient {
         txt_subject: this.normalizeSubject(subject),
         txt_courseNumber: courseNumber.toUpperCase(),
       })
-      return rows.map(parse)
+      return rows.map((r) => parse(r, this.waitlistHoldsSeats))
     } catch (err) {
       // Never report a throttle as "no sections". The caller tells the student to retry.
       if (isThrottled(err)) {

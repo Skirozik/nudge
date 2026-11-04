@@ -23,9 +23,9 @@ function liveSchoolNames(): string[] {
   return liveSchools().map((s) => s.shortName)
 }
 
-/** Only on sections with a waitlist, so the model can't mistake held seats for open ones. */
+/** Only where the waitlist holds the seats, so the model can't mistake held seats for open ones. */
 function waitlistFields(s: SectionInfo): Record<string, number> {
-  return s.waitCount > 0 ? { onWaitlist: s.waitCount, seatsHeldForWaitlist: s.seatsShown } : {}
+  return s.heldForWaitlist ? { onWaitlist: s.waitCount, seatsHeldForWaitlist: s.seatsShown } : {}
 }
 
 /**
@@ -34,7 +34,7 @@ function waitlistFields(s: SectionInfo): Record<string, number> {
  */
 export async function watchCourse(
   userId: string,
-  input: { query: string; term?: string }
+  input: { query: string }
 ): Promise<Record<string, unknown>> {
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { school: true, source: true } })
 
@@ -60,7 +60,9 @@ export async function watchCourse(
   }
 
   const banner = bannerFor(school.id)
-  const activeTerm = input.term ?? (await banner.getActiveTerm())
+  // Always the school's own active term. A term from the model can be another
+  // school's code (Spring is 01 at GSU and 02 at Georgia Tech) or a past one.
+  const activeTerm = await banner.getActiveTerm()
   const [rawSubject, rawNumber, ...rest] = parts
   const subject = banner.normalizeSubject(rawSubject)
   const courseNumber = rawNumber.toUpperCase()
