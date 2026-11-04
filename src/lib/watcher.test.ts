@@ -48,10 +48,10 @@ describe('pollGroup', () => {
   it('alerts with the takeable count once the waitlist clears', async () => {
     vi.clearAllMocks()
     vi.mocked(applyDiff).mockResolvedValue({ transition: '0_to_N', seatEventId: 'e1' })
-    vi.mocked(claimAlertSlot).mockResolvedValue({ alertNumber: 1, retired: false })
+    vi.mocked(claimAlertSlot).mockResolvedValue({ alertNumber: 1, retired: false, claimedAt: new Date(1_700_000_000_000) })
     await poll({ seatsShown: 2, takeableSeats: 2, waitCount: 0 })
     expect(applyDiff).toHaveBeenCalledWith(watch, 2)
-    expect(scheduleSeatAlert).toHaveBeenCalledWith(expect.objectContaining({ watchId: 'w1', seats: 2 }))
+    expect(scheduleSeatAlert).toHaveBeenCalledWith(expect.objectContaining({ watchId: 'w1', seats: 2, claimedAt: new Date(1_700_000_000_000) }))
   })
 })
 

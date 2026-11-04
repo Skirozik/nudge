@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import type { SeatAlertJobData } from './queue'
 
 const MAX_WATCHES = parseInt(process.env.MAX_WATCHES_PER_USER ?? '5', 10)
 
@@ -192,6 +193,8 @@ export interface AlertClaim {
   alertNumber: number
   /** True when this claim spent the last slot and retired the watch. */
   retired: boolean
+  /** The lastAlertAt this claim wrote. Identifies the claim. */
+  claimedAt: Date
 }
 
 /**
@@ -211,6 +214,7 @@ export async function claimAlertSlot(
   // Cheap short-circuit on the poll snapshot; the update below is the real guard.
   if (watch.alertCount >= MAX_ALERTS_PER_WATCH) return null
 
+  const claimedAt = new Date()
   let claimed
   try {
     claimed = await prisma.watch.update({
@@ -223,7 +227,7 @@ export async function claimAlertSlot(
           { lastAlertAt: { lt: new Date(Date.now() - ALERT_COOLDOWN_MS) } },
         ],
       },
-      data: { alertCount: { increment: 1 }, lastAlertAt: new Date() },
+      data: { alertCount: { increment: 1 }, lastAlertAt: claimedAt },
     })
   } catch (err) {
     // P2025: the predicate didn't match — someone else claimed it, the budget is
@@ -237,7 +241,7 @@ export async function claimAlertSlot(
     // pollAll only selects ACTIVE, so this also stops polling Banner for it.
     await prisma.watch.update({ where: { id: watch.id }, data: { status: 'PAUSED' } })
   }
-  return { alertNumber: claimed.alertCount, retired }
+  return { alertNumber: claimed.alertCount, retired, claimedAt }
 }
 
 /** Gives a claimed slot back when the enqueue that followed it failed. */
@@ -250,6 +254,51 @@ export async function releaseAlertSlot(watchId: string, wasRetired: boolean): Pr
       data: { alertCount: { decrement: 1 }, ...(wasRetired ? { status: 'ACTIVE' as const } : {}) },
     })
     .catch((e) => console.error(`[watches] Failed to release alert slot for ${watchId}:`, e))
+}
+
+/**
+ * The worker's failed handler, for seat alerts only. Runs once, after the last
+ * attempt. Nothing reached the student, so the claimed slot goes back and
+ * lastSeats goes back to 0, which lets the next poll see a fresh 0→N edge.
+ * lastAlertAt is cleared too, or that edge would land inside the cooldown and
+ * be dropped. If BlueBubbles is still down, the next alert fails the same way
+ * about 5 minutes later, so retries stay paced.
+ *
+ * Skipped, apart from the metric, when the watch no longer reflects this claim:
+ * it was cancelled, expired or fulfilled, or it was re-armed (lastAlertAt reset).
+ *
+ * Returns true when it handled the job.
+ */
+export async function handleSeatAlertJobFailed(
+  job: { name: string; attemptsMade: number; opts: { attempts?: number }; data: unknown },
+  err: Error
+): Promise<boolean> {
+  if (job.name !== 'send-seat-alert') return false
+  if (job.attemptsMade < (job.opts.attempts ?? 1)) return false // BullMQ will retry it
+
+  const { watchId, alertNumber, claimedAt } = job.data as SeatAlertJobData
+  const watch = await prisma.watch.findUnique({
+    where: { id: watchId },
+    select: { userId: true, status: true, lastAlertAt: true },
+  })
+  const stillThisClaim =
+    !!watch &&
+    (watch.status === 'ACTIVE' || watch.status === 'PAUSED') &&
+    (claimedAt === undefined || watch.lastAlertAt?.getTime() === claimedAt)
+
+  if (stillThisClaim) {
+    await releaseAlertSlot(watchId, alertNumber >= MAX_ALERTS_PER_WATCH)
+    await prisma.watch.update({ where: { id: watchId }, data: { lastSeats: 0, lastAlertAt: null } })
+  }
+  console.error(`[watches] Seat alert ${alertNumber} for watch ${watchId} failed after ${job.attemptsMade} attempts${stillThisClaim ? ', slot released' : ''}:`, err.message)
+  await logMetric('seat_alert_failed', watch?.userId ?? null, {
+    watchId,
+    alertNumber,
+    attempts: job.attemptsMade,
+    released: stillThisClaim,
+    error: err.message.slice(0, 200),
+  })
+  return true
 }
 
 export async function logMetric(

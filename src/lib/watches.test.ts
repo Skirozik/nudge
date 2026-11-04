@@ -9,7 +9,7 @@ vi.mock('./prisma', () => ({
   },
 }))
 
-import { applyDiff, claimAlertSlot, releaseAlertSlot, createWatch } from './watches'
+import { applyDiff, claimAlertSlot, releaseAlertSlot, createWatch, handleSeatAlertJobFailed } from './watches'
 import { prisma } from './prisma'
 
 const mockSeatEventCreate = prisma.seatEvent.create as ReturnType<typeof vi.fn>
@@ -83,7 +83,7 @@ describe('claimAlertSlot', () => {
 
     const claim = await claimAlertSlot(w(0), 3, '0_to_N')
 
-    expect(claim).toEqual({ alertNumber: 1, retired: false })
+    expect(claim).toEqual({ alertNumber: 1, retired: false, claimedAt: expect.any(Date) })
     expect(mockWatchUpdate).toHaveBeenCalledOnce()
   })
 
@@ -113,7 +113,7 @@ describe('claimAlertSlot', () => {
 
     const claim = await claimAlertSlot(w(2), 1, '0_to_N')
 
-    expect(claim).toEqual({ alertNumber: 3, retired: true })
+    expect(claim).toEqual({ alertNumber: 3, retired: true, claimedAt: expect.any(Date) })
     expect(mockWatchUpdate).toHaveBeenCalledTimes(2)
     expect(mockWatchUpdate).toHaveBeenLastCalledWith({
       where: { id: 'w1' },
@@ -255,7 +255,7 @@ describe('lifetime cap (the NUTR 2100 case)', () => {
     row.lastAlertAt = null
 
     const claim = await claimAlertSlot({ id: 'w1', alertCount: row.alertCount }, 1, '0_to_N')
-    expect(claim).toEqual({ alertNumber: 1, retired: false })
+    expect(claim).toEqual({ alertNumber: 1, retired: false, claimedAt: expect.any(Date) })
   })
 })
 
@@ -298,5 +298,108 @@ describe('createWatch', () => {
     expect((await createWatch(params)).error).toBe('Already watching CSC 2720 (CRN 12345).')
     expect(mockCreate).not.toHaveBeenCalled()
     expect(mockWatchUpdate).not.toHaveBeenCalled()
+  })
+})
+
+// ── handleSeatAlertJobFailed ───────────────────────────────────────────────
+
+describe('handleSeatAlertJobFailed', () => {
+  const mockFindUnique = prisma.watch.findUnique as ReturnType<typeof vi.fn>
+  const mockMetric = prisma.metricEvent.create as ReturnType<typeof vi.fn>
+  const claimedAt = new Date('2026-11-04T15:00:00Z')
+  const job = (over: { attemptsMade?: number; name?: string; alertNumber?: number; claimedAt?: number } = {}) => ({
+    name: over.name ?? 'send-seat-alert',
+    attemptsMade: over.attemptsMade ?? 6,
+    opts: { attempts: 6 },
+    data: { watchId: 'w1', alertNumber: over.alertNumber ?? 1, seats: 2, seatEventId: 'e1', claimedAt: 'claimedAt' in over ? over.claimedAt : claimedAt.getTime() },
+  })
+  const err = new Error('BlueBubbles API error 502')
+
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockWatchUpdate.mockResolvedValue({})
+    mockMetric.mockResolvedValue({})
+  })
+
+  it('does nothing while BullMQ still has attempts left', async () => {
+    await expect(handleSeatAlertJobFailed(job({ attemptsMade: 5 }), err)).resolves.toBe(false)
+    expect(mockWatchUpdate).not.toHaveBeenCalled()
+    expect(mockMetric).not.toHaveBeenCalled()
+  })
+
+  it('ignores other job types', async () => {
+    await expect(handleSeatAlertJobFailed(job({ name: 'send-broadcast' }), err)).resolves.toBe(false)
+    expect(mockFindUnique).not.toHaveBeenCalled()
+  })
+
+  it('on the last attempt gives the slot back, reopens the edge and logs it', async () => {
+    mockFindUnique.mockResolvedValueOnce({ userId: 'u1', status: 'ACTIVE', lastAlertAt: claimedAt })
+
+    await expect(handleSeatAlertJobFailed(job(), err)).resolves.toBe(true)
+
+    expect(mockWatchUpdate).toHaveBeenCalledWith({ where: { id: 'w1' }, data: { alertCount: { decrement: 1 } } })
+    expect(mockWatchUpdate).toHaveBeenCalledWith({ where: { id: 'w1' }, data: { lastSeats: 0, lastAlertAt: null } })
+    expect(mockMetric).toHaveBeenCalledWith({
+      data: expect.objectContaining({ kind: 'seat_alert_failed', userId: 'u1', meta: expect.objectContaining({ watchId: 'w1', alertNumber: 1, released: true }) }),
+    })
+  })
+
+  it('un-retires the watch when the failed alert was its last slot', async () => {
+    mockFindUnique.mockResolvedValueOnce({ userId: 'u1', status: 'PAUSED', lastAlertAt: claimedAt })
+
+    await handleSeatAlertJobFailed(job({ alertNumber: 3 }), err)
+
+    expect(mockWatchUpdate).toHaveBeenCalledWith({ where: { id: 'w1' }, data: { alertCount: { decrement: 1 }, status: 'ACTIVE' } })
+  })
+
+  it('leaves a watch the student cancelled during the retries alone', async () => {
+    mockFindUnique.mockResolvedValueOnce({ userId: 'u1', status: 'CANCELLED', lastAlertAt: claimedAt })
+
+    await handleSeatAlertJobFailed(job(), err)
+
+    expect(mockWatchUpdate).not.toHaveBeenCalled()
+    expect(mockMetric).toHaveBeenCalledWith({ data: expect.objectContaining({ kind: 'seat_alert_failed', meta: expect.objectContaining({ released: false }) }) })
+  })
+
+  it('leaves a watch re-armed during the retries alone, so its count never goes negative', async () => {
+    // createWatch resets alertCount to 0 and lastAlertAt to null on a re-arm
+    mockFindUnique.mockResolvedValueOnce({ userId: 'u1', status: 'ACTIVE', lastAlertAt: null })
+
+    await handleSeatAlertJobFailed(job(), err)
+
+    expect(mockWatchUpdate).not.toHaveBeenCalled()
+  })
+
+  it('still releases a job queued before claimedAt existed', async () => {
+    mockFindUnique.mockResolvedValueOnce({ userId: 'u1', status: 'ACTIVE', lastAlertAt: claimedAt })
+
+    await handleSeatAlertJobFailed(job({ claimedAt: undefined }), err)
+
+    expect(mockWatchUpdate).toHaveBeenCalledWith({ where: { id: 'w1' }, data: { lastSeats: 0, lastAlertAt: null } })
+  })
+
+  it('the next poll sees a fresh 0→N edge and can claim right away', async () => {
+    const row = fakeWatchRow()
+    const first = await claimAlertSlot({ id: 'w1', alertCount: row.alertCount }, 2, '0_to_N')
+    expect(first?.alertNumber).toBe(1)
+    mockFindUnique.mockResolvedValueOnce({ userId: 'u1', status: row.status, lastAlertAt: row.lastAlertAt })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const claimUpdate = mockWatchUpdate.getMockImplementation() as any
+    mockWatchUpdate.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if ('lastSeats' in args.data) { row.lastAlertAt = null; return { ...row } }
+      if ('alertCount' in args.data && (args.data.alertCount as { decrement?: number }).decrement) { row.alertCount -= 1; return { ...row } }
+      return claimUpdate(args)
+    })
+
+    await handleSeatAlertJobFailed(job({ claimedAt: first!.claimedAt.getTime() }), err)
+    expect(row.alertCount).toBe(0)
+
+    // lastSeats is 0 again, so the next poll's diff is an edge
+    mockSeatEventCreate.mockResolvedValueOnce({ id: 'e2' })
+    const { transition } = await applyDiff({ ...baseWatch, lastSeats: 0 }, 2)
+    expect(transition).toBe('0_to_N')
+    // and no cooldown blocks the claim
+    const second = await claimAlertSlot({ id: 'w1', alertCount: row.alertCount }, 2, transition)
+    expect(second?.alertNumber).toBe(1)
   })
 })

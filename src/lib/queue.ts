@@ -152,28 +152,52 @@ export async function cancelPendingReminders(assignmentId: string): Promise<void
   }
 }
 
+/**
+ * Tries for about 5 minutes (10s, 20s, 40s, 80s, 160s between attempts) so a
+ * short BlueBubbles outage doesn't lose the alert. After the last attempt the
+ * worker's failed handler gives the slot back (handleSeatAlertJobFailed).
+ */
+export const SEAT_ALERT_ATTEMPTS = 6
+export const SEAT_ALERT_BACKOFF_MS = 10_000
+
+export interface SeatAlertJobData {
+  watchId: string
+  alertNumber: number
+  seats: number
+  seatEventId: string | null
+  /** ms timestamp of the claim. Jobs queued before this field existed don't have it. */
+  claimedAt?: number
+}
+
+/**
+ * One job per claim. The id includes the claim time, so a BullMQ retry stays
+ * the same job while two claims never share an id. A failed job is kept
+ * (removeOnFail: false), and BullMQ ignores an add whose id already exists, so
+ * an id of just watch and alert number blocked alert 1 after a re-arm.
+ */
+export function seatAlertJobId(watchId: string, alertNumber: number, claimedAt: Date): string {
+  return `alert:${watchId}:${alertNumber}:${claimedAt.getTime()}`
+}
+
 export async function scheduleSeatAlert(params: {
   watchId: string
-  /** 1-based slot from claimAlertSlot — also the dedup key. */
+  /** 1-based slot from claimAlertSlot. */
   alertNumber: number
   /** Seats observed at claim time; the watch row may be stale by send time. */
   seats: number
   seatEventId: string | null
+  /** From claimAlertSlot. Makes the job id unique per claim. */
+  claimedAt: Date
 }): Promise<void> {
-  const { watchId, alertNumber, seats, seatEventId } = params
-  await reminderQueue.add(
-    'send-seat-alert',
-    { watchId, alertNumber, seats, seatEventId },
-    {
-      // Keyed on the claimed slot, not the SeatEvent: the slot is unique per
-      // alert and is what makes a BullMQ retry idempotent.
-      jobId: `alert:${watchId}:${alertNumber}`,
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 10_000 },
-      removeOnComplete: true,
-      removeOnFail: false,
-    }
-  )
+  const { watchId, alertNumber, seats, seatEventId, claimedAt } = params
+  const data: SeatAlertJobData = { watchId, alertNumber, seats, seatEventId, claimedAt: claimedAt.getTime() }
+  await reminderQueue.add('send-seat-alert', data, {
+    jobId: seatAlertJobId(watchId, alertNumber, claimedAt),
+    attempts: SEAT_ALERT_ATTEMPTS,
+    backoff: { type: 'exponential', delay: SEAT_ALERT_BACKOFF_MS },
+    removeOnComplete: true,
+    removeOnFail: false,
+  })
 }
 
 export async function scheduleBroadcast(userId: string, phone: string, message: string, delayMs = 0): Promise<void> {
