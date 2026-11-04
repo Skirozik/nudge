@@ -242,6 +242,7 @@ export async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches:
       await scheduleSeatAlert({
         watchId: w.id,
         alertNumber: claim.alertNumber,
+        claimedAt: claim.claimedAt,
         seats: section.takeableSeats,
         seatEventId,
       })

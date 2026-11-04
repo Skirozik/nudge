@@ -8,6 +8,7 @@ import { redis, setSurgeMode } from '@/lib/redis'
 import { scheduleBroadcast } from '@/lib/queue'
 import { handleServerFailure, clearNotified } from '@/lib/outage'
 import { isLive, resolveSchool, SCHOOLS } from '@/lib/schools'
+import { buildStatsReply } from '@/lib/adminStats'
 import { createUser, runWelcome, welcomeForPhoto, replayHeldText, heldTextNote } from '@/lib/onboarding'
 import { isOptOut, isReaction, OPT_OUT_REPLY } from '@/lib/inbound'
 import { startNewUserTest, endNewUserTest } from '@/lib/testMode'
@@ -251,27 +252,7 @@ export async function POST(req: NextRequest) {
     const cmd = text.trim().toUpperCase()
 
     if (cmd === 'STATS') {
-      const [userCount, watchCount, alertCount, seatCaughtCount] = await Promise.all([
-        prisma.user.count({ where: { optedOut: false } }),
-        prisma.watch.count({ where: { status: 'ACTIVE' } }),
-        prisma.metricEvent.count({ where: { kind: 'alert_sent', createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } }),
-        prisma.metricEvent.count({ where: { kind: 'seat_caught' } }),
-      ])
-      // Schools students asked for that aren't live yet
-      const requests = await prisma.metricEvent.findMany({
-        where: { kind: 'school_requested' },
-        select: { meta: true },
-        orderBy: { createdAt: 'desc' },
-        take: 500,
-      })
-      const demand = new Map<string, number>()
-      for (const r of requests) {
-        const meta = r.meta as { said?: string; schoolId?: string | null } | null
-        const name = (meta?.schoolId ?? meta?.said ?? 'unknown').toLowerCase()
-        demand.set(name, (demand.get(name) ?? 0) + 1)
-      }
-      const topDemand = [...demand].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name, n]) => `${name} ${n}`).join(', ')
-      const stats = `Users: ${userCount}\nActive watches: ${watchCount}\nAlerts (24h): ${alertCount}\nSeats caught (all time): ${seatCaughtCount}${topDemand ? `\nSchool requests: ${topDemand}` : ''}`
+      const stats = await buildStatsReply()
       await sendMessage(normalizedPhone, stats)
       return NextResponse.json({ ok: true })
     }

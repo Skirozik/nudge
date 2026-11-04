@@ -9,7 +9,7 @@ import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleSeatAlert } f
 import { normalizePhone } from '../lib/phone'
 import { startWatcherLoop, sectionKey } from '../lib/watcher'
 import { startOutageMonitor, handleServerFailure, markOutage } from '../lib/outage'
-import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH } from '../lib/watches'
+import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH, handleSeatAlertJobFailed } from '../lib/watches'
 import { bannerFor } from '../lib/banner'
 import { isThrottled } from '../lib/bannerErrors'
 import { getSchool, getLiveSchool, liveSchools } from '../lib/schools'
@@ -390,6 +390,7 @@ async function recoverOnStartup(): Promise<void> {
             await scheduleSeatAlert({
               watchId: gw.id,
               alertNumber: claim.alertNumber,
+              claimedAt: claim.claimedAt,
               seats: section.takeableSeats,
               seatEventId,
             })
@@ -716,7 +717,11 @@ const worker = new Worker(
 )
 
 worker.on('completed', (job) => console.log(`[worker] Job ${job.id} completed`))
-worker.on('failed', (job, err) => console.error(`[worker] Job ${job?.id} failed:`, err.message))
+worker.on('failed', (job, err) => {
+  console.error(`[worker] Job ${job?.id} failed:`, err.message)
+  // Only acts on a seat alert's last attempt
+  if (job) handleSeatAlertJobFailed(job, err).catch((e) => console.error(`[worker] Seat alert failure handling broke for job ${job.id}:`, e))
+})
 worker.on('error', (err) => console.error('[worker] Worker error:', err))
 reminderQueue.on('error', (err) => console.error('[queue] Queue error:', err))
 
