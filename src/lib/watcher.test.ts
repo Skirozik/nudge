@@ -6,7 +6,7 @@ vi.mock('./queue', () => ({ scheduleSeatAlert: vi.fn() }))
 vi.mock('./redis', () => ({ isSurgeMode: vi.fn() }))
 vi.mock('./watches', () => ({ applyDiff: vi.fn(), claimAlertSlot: vi.fn(), releaseAlertSlot: vi.fn(), logMetric: vi.fn(), MAX_ALERTS_PER_WATCH: 3 }))
 
-import { laneFilter, pollGroup } from './watcher'
+import { laneFilter, pollGroup, recordThrottleCycle, resetThrottleStreaks, THROTTLE_ALERT_CYCLES } from './watcher'
 import { bannerFor } from './banner'
 import { applyDiff, claimAlertSlot } from './watches'
 import { scheduleSeatAlert } from './queue'
@@ -65,5 +65,60 @@ describe('laneFilter', () => {
     expect(laneFilter('priority', undefined)).toBeNull()
     expect(laneFilter('priority', '  ')).toBeNull()
     expect(laneFilter('normal', undefined)).toEqual({})
+  })
+})
+
+describe('recordThrottleCycle', () => {
+  const gsu = { id: 'gsu', shortName: 'GSU' }
+  const gt = { id: 'gatech', shortName: 'Georgia Tech' }
+  const run = async (school: typeof gsu, outcome: 'ok' | 'throttled' | 'idle', times: number, notify: (m: string) => Promise<void>) => {
+    for (let i = 0; i < times; i++) await recordThrottleCycle(school, outcome, notify)
+  }
+
+  it(`texts the admin once after ${THROTTLE_ALERT_CYCLES} throttled cycles in a row`, async () => {
+    resetThrottleStreaks()
+    const notify = vi.fn(async (msg: string) => { void msg })
+    await run(gsu, 'throttled', THROTTLE_ALERT_CYCLES - 1, notify)
+    expect(notify).not.toHaveBeenCalled()
+    await run(gsu, 'throttled', 1, notify)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toMatch(/GSU/)
+    await run(gsu, 'throttled', 10, notify)
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('a real answer ends the stretch, so the next stretch can text again', async () => {
+    resetThrottleStreaks()
+    const notify = vi.fn(async (msg: string) => { void msg })
+    await run(gsu, 'throttled', THROTTLE_ALERT_CYCLES, notify)
+    await run(gsu, 'ok', 1, notify)
+    await run(gsu, 'throttled', THROTTLE_ALERT_CYCLES - 1, notify)
+    expect(notify).toHaveBeenCalledTimes(1)
+    await run(gsu, 'throttled', 1, notify)
+    expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('an idle cycle neither counts nor resets', async () => {
+    resetThrottleStreaks()
+    const notify = vi.fn(async (msg: string) => { void msg })
+    await run(gsu, 'throttled', THROTTLE_ALERT_CYCLES - 1, notify)
+    await run(gsu, 'idle', 3, notify)
+    await run(gsu, 'throttled', 1, notify)
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('counts each school on its own', async () => {
+    resetThrottleStreaks()
+    const notify = vi.fn(async (msg: string) => { void msg })
+    await run(gsu, 'throttled', THROTTLE_ALERT_CYCLES - 1, notify)
+    await run(gt, 'throttled', THROTTLE_ALERT_CYCLES - 1, notify)
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('a failed text does not throw out of the loop', async () => {
+    resetThrottleStreaks()
+    const notify = vi.fn(async (msg: string) => { throw new Error(`bluebubbles down: ${msg}`) })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await expect(run(gsu, 'throttled', THROTTLE_ALERT_CYCLES, notify)).resolves.toBeUndefined()
   })
 })
