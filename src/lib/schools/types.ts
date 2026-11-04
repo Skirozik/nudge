@@ -28,4 +28,11 @@ export interface BannerConfig {
   registerSite: string
   /** Abbreviations students type → this school's subject codes, e.g. { CSCI: 'CSC' }. */
   subjectAliases: Record<string, string>
+  /**
+   * Whether open seats go to the waitlist first while anyone is on it, so a
+   * student can't take them. Leave unset for true, which GSU was tested to do
+   * (it refused SOCI 1160 with "Open - Reserved for Wait List"). Set false only
+   * once a student at the school has registered past a waitlist.
+   */
+  waitlistHoldsSeats?: boolean
 }

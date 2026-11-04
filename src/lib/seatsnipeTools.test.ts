@@ -32,9 +32,9 @@ const mockBannerFor = bannerFor as ReturnType<typeof vi.fn>
 const mockGrades = gradesByInstructor as ReturnType<typeof vi.fn>
 
 const SECTIONS = [
-  { crn: '90474', courseCode: 'CSC 1301', sectionLabel: 'Sec 010, MWF 9–9:50, Jones, Ann', seatsShown: 0, takeableSeats: 0, waitCount: 0, maximumEnrollment: 40, instructor: 'Jones, Ann' },
-  { crn: '90476', courseCode: 'CSC 1301', sectionLabel: 'Sec 002, MWF 9–9:50, Smith, Bo', seatsShown: 3, takeableSeats: 3, waitCount: 0, maximumEnrollment: 40, instructor: 'Smith, Bo' },
-  { crn: '90477', courseCode: 'CSC 1301', sectionLabel: 'Sec 004, TTh 2:00pm–3:15pm, Lee, Kim', seatsShown: 2, takeableSeats: 0, waitCount: 12, maximumEnrollment: 40, instructor: 'Lee, Kim' },
+  { crn: '90474', courseCode: 'CSC 1301', sectionLabel: 'Sec 010, MWF 9–9:50, Jones, Ann', seatsShown: 0, takeableSeats: 0, waitCount: 0, heldForWaitlist: false, maximumEnrollment: 40, instructor: 'Jones, Ann' },
+  { crn: '90476', courseCode: 'CSC 1301', sectionLabel: 'Sec 002, MWF 9–9:50, Smith, Bo', seatsShown: 3, takeableSeats: 3, waitCount: 0, heldForWaitlist: false, maximumEnrollment: 40, instructor: 'Smith, Bo' },
+  { crn: '90477', courseCode: 'CSC 1301', sectionLabel: 'Sec 004, TTh 2:00pm–3:15pm, Lee, Kim', seatsShown: 2, takeableSeats: 0, waitCount: 12, heldForWaitlist: true, maximumEnrollment: 40, instructor: 'Lee, Kim' },
 ]
 const fakeBanner = {
   getActiveTerm: vi.fn(async () => '202701'),
@@ -109,6 +109,28 @@ describe('watchCourse guardrail', () => {
     const result = await watchCourse('u1', { query: 'CSC 4351' })
 
     expect(String(result.message)).toMatch(/No sections found/)
+  })
+
+  it('ignores a term from the model and uses the school\'s active term', async () => {
+    findUser.mockResolvedValueOnce({ school: 'gsu', source: null })
+
+    // Spring at Georgia Tech is 02, so a model guessing GSU's 01 picks a term that doesn't exist
+    await watchCourse('u1', { query: 'CSC 1301 90476', term: '209901' } as { query: string })
+
+    expect(fakeBanner.searchByCourse).toHaveBeenCalledWith('202701', 'CSC', '1301')
+    expect(mockCreateWatch).toHaveBeenCalledWith(expect.objectContaining({ term: '202701' }))
+  })
+
+  it('shows a waitlist only where the school holds seats for it', async () => {
+    findUser.mockResolvedValueOnce({ school: 'gsu', source: null })
+    fakeBanner.searchByCourse.mockResolvedValueOnce([
+      { crn: '30001', courseCode: 'CS 1331', sectionLabel: 'Sec A', seatsShown: 3, takeableSeats: 3, waitCount: 5, heldForWaitlist: false, maximumEnrollment: 40, instructor: 'Doe, Jane' },
+    ])
+
+    const { sections } = (await watchCourse('u1', { query: 'CS 1331' })) as { sections: Record<string, unknown>[] }
+
+    expect(sections[0]).toMatchObject({ seats: 3 })
+    expect(sections[0]).not.toHaveProperty('onWaitlist')
   })
 
   it('lists sections when no CRN is given', async () => {
