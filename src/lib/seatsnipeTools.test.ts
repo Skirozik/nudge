@@ -22,6 +22,7 @@ import { createWatch, logMetric } from './watches'
 import { bannerFor } from './banner'
 import { gradesByInstructor } from './grades/stats'
 import { SCHOOLS, type School } from './schools'
+import { BannerThrottledError } from './bannerErrors'
 
 const findUser = prisma.user.findUnique as ReturnType<typeof vi.fn>
 const updateUser = prisma.user.update as ReturnType<typeof vi.fn>
@@ -87,6 +88,27 @@ describe('watchCourse guardrail', () => {
       expect.objectContaining({ userId: 'u1', school: 'gsu', term: '202701', crn: '90476', initialSeats: 3, source: 'reddit' })
     )
     expect(result).toMatchObject({ success: true, school: 'GSU', crn: '90476' })
+  })
+
+  it('tells the student to retry when Banner is throttling, never "no sections"', async () => {
+    findUser.mockResolvedValueOnce({ school: 'gsu', source: null })
+    fakeBanner.searchByCourse.mockRejectedValueOnce(new BannerThrottledError('throttled'))
+
+    const result = await watchCourse('u1', { query: 'CSC 1301' })
+
+    expect(result).toMatchObject({ retryable: true })
+    expect(String(result.error)).toMatch(/try again in a minute/)
+    expect(JSON.stringify(result)).not.toMatch(/No sections found/)
+    expect(mockCreateWatch).not.toHaveBeenCalled()
+  })
+
+  it('still answers "no sections" for a class that really has none', async () => {
+    findUser.mockResolvedValueOnce({ school: 'gsu', source: null })
+    fakeBanner.searchByCourse.mockResolvedValueOnce([])
+
+    const result = await watchCourse('u1', { query: 'CSC 4351' })
+
+    expect(String(result.message)).toMatch(/No sections found/)
   })
 
   it('lists sections when no CRN is given', async () => {

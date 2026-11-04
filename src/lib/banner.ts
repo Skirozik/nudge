@@ -14,6 +14,9 @@
  */
 
 import { getLiveSchool, type LiveSchool } from './schools'
+import { BannerThrottledError, isThrottled } from './bannerErrors'
+
+export { BannerThrottledError, isThrottled } from './bannerErrors'
 
 const UA = 'SeatSnipe/1.0 (nudgebuddy.net) seat-availability-monitor zacharyinyan@gmail.com'
 
@@ -352,6 +355,11 @@ export class BannerClient {
       }
       throw new Error(`${this.tag} searchResults returned non-JSON after re-login (first 120 chars): ${text.slice(0, 120)}`)
     }
+    // data: null on a 200 is a silent throttle, not an empty class (that is data: []).
+    // No retry here. Retrying right away would land in the same window.
+    if (json.data === null) {
+      throw new BannerThrottledError(`${this.tag} searchResults came back with data: null (throttled?)`)
+    }
     return json.data ?? []
   }
 
@@ -372,6 +380,11 @@ export class BannerClient {
       const match = rows.find((r) => r.courseReferenceNumber === crn)
       return match ? parse(match) : null
     } catch (err) {
+      // A throttle is not "the section is gone". Let the caller skip the cycle.
+      if (isThrottled(err)) {
+        console.warn(`${this.tag} throttled on searchByCrn(${crn})`)
+        throw err
+      }
       console.error(`${this.tag} searchByCrn(${crn}):`, err)
       return null
     }
@@ -409,6 +422,11 @@ export class BannerClient {
       })
       return rows.map(parse)
     } catch (err) {
+      // Never report a throttle as "no sections". The caller tells the student to retry.
+      if (isThrottled(err)) {
+        console.warn(`${this.tag} throttled on searchByCourse(${subject} ${courseNumber})`)
+        throw err
+      }
       console.error(`${this.tag} searchByCourse(${subject} ${courseNumber}):`, err)
       return []
     }

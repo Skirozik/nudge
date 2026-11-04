@@ -10,6 +10,7 @@ import { laneFilter, pollGroup } from './watcher'
 import { bannerFor } from './banner'
 import { applyDiff, claimAlertSlot } from './watches'
 import { scheduleSeatAlert } from './queue'
+import { BannerThrottledError } from './bannerErrors'
 import type { LiveSchool } from './schools'
 
 describe('pollGroup', () => {
@@ -20,6 +21,20 @@ describe('pollGroup', () => {
     vi.mocked(bannerFor).mockReturnValue({ searchByCrn: vi.fn(async () => section) } as never)
     return pollGroup(school, group, [watch])
   }
+
+  it('skips a throttled poll without diffing, alerting, or throwing', async () => {
+    vi.clearAllMocks()
+    vi.mocked(bannerFor).mockReturnValue({ searchByCrn: vi.fn(async () => { throw new BannerThrottledError('throttled') }) } as never)
+    await expect(pollGroup(school, group, [watch])).resolves.toBe('throttled')
+    expect(applyDiff).not.toHaveBeenCalled()
+    expect(scheduleSeatAlert).not.toHaveBeenCalled()
+  })
+
+  it('still throws when the section is missing, so real errors count toward the breaker', async () => {
+    vi.clearAllMocks()
+    vi.mocked(bannerFor).mockReturnValue({ searchByCrn: vi.fn(async () => null) } as never)
+    await expect(pollGroup(school, group, [watch])).rejects.toThrow(/returned null/)
+  })
 
   it('sends nothing for a seat held for the waitlist', async () => {
     vi.clearAllMocks()
