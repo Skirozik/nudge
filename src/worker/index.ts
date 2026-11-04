@@ -11,6 +11,7 @@ import { startWatcherLoop, sectionKey } from '../lib/watcher'
 import { startOutageMonitor, handleServerFailure, markOutage } from '../lib/outage'
 import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH } from '../lib/watches'
 import { bannerFor } from '../lib/banner'
+import { isThrottled } from '../lib/bannerErrors'
 import { getSchool, getLiveSchool, liveSchools } from '../lib/schools'
 import { claimBroadcastSend } from '../lib/broadcast'
 import { createUser, runWelcome } from '../lib/onboarding'
@@ -398,7 +399,8 @@ async function recoverOnStartup(): Promise<void> {
           }
         }
       } catch (err) {
-        console.error(`[worker] Recovery poll failed for CRN ${w.crn}:`, err)
+        if (isThrottled(err)) console.warn(`[worker] Recovery poll for CRN ${w.crn} skipped, Banner is throttling`)
+        else console.error(`[worker] Recovery poll failed for CRN ${w.crn}:`, err)
       }
     }
   }

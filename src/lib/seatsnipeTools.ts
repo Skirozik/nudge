@@ -1,5 +1,6 @@
 import { prisma } from './prisma'
 import { bannerFor, type SectionInfo } from './banner'
+import { isThrottled } from './bannerErrors'
 import { createWatch, logMetric } from './watches'
 import { getSchool, isLive, liveSchools, resolveSchool } from './schools'
 import { gradesByInstructor } from './grades/stats'
@@ -65,7 +66,16 @@ export async function watchCourse(
   const courseNumber = rawNumber.toUpperCase()
   const specificCrn = rest.find((p) => /^\d+$/.test(p)) ?? null
 
-  const sections = await banner.searchByCourse(activeTerm, subject, courseNumber)
+  let sections: SectionInfo[]
+  try {
+    sections = await banner.searchByCourse(activeTerm, subject, courseNumber)
+  } catch (err) {
+    // A throttled search says nothing about the class, so never answer "no sections".
+    if (isThrottled(err)) {
+      return { error: `${school.shortName}'s class search is busy right now. Ask the student to try again in a minute.`, retryable: true }
+    }
+    throw err
+  }
   if (!sections.length) {
     return { sections: [], message: `No sections found for ${subject} ${courseNumber} at ${school.shortName} this term.` }
   }

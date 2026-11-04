@@ -1,5 +1,6 @@
 import { prisma } from './prisma'
 import { bannerFor } from './banner'
+import { isThrottled } from './bannerErrors'
 import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH } from './watches'
 import { scheduleSeatAlert } from './queue'
 import { isSurgeMode } from './redis'
@@ -128,35 +129,58 @@ async function pollAll(school: LiveSchool, state: LoopState, lane: Record<string
   const queue = [...groups.values()]
   let inFlight = 0
   let qi = 0
+  // Once Banner throttles us, send no more requests this cycle. Hammering it
+  // would only stretch the throttle out.
+  let throttled = false
 
   await new Promise<void>((resolve) => {
+    function done(): boolean {
+      return inFlight === 0 && (throttled || qi >= queue.length)
+    }
     function next(): void {
-      while (inFlight < CONCURRENCY && qi < queue.length) {
+      while (inFlight < CONCURRENCY && qi < queue.length && !throttled) {
         const group = queue[qi++]
         inFlight++
         pollGroup(school, group, watches)
-          .then(() => { state.consecutiveErrors = 0 })
+          .then((outcome) => {
+            if (outcome === 'throttled') {
+              throttled = true
+              return
+            }
+            state.consecutiveErrors = 0
+          })
           .catch(() => { state.consecutiveErrors++ })
           .finally(() => {
             inFlight--
-            if (qi < queue.length) {
-              next()
-            } else if (inFlight === 0) {
-              resolve()
-            }
+            if (done()) resolve()
+            else next()
           })
       }
-      if (qi >= queue.length && inFlight === 0) resolve()
+      if (done()) resolve()
     }
     next()
   })
+  if (throttled) {
+    console.warn(`[watcher:${school.id}] Banner is throttling, skipped the rest of this cycle`)
+    try { await logMetric('banner_throttled', null, { school: school.id }) } catch {}
+  }
 }
 
-export async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches: PolledWatch[]): Promise<void> {
+/**
+ * Returns 'throttled' when Banner is throttling us. That is not a failure of
+ * this section, so nothing is diffed or alerted and the error count is left alone.
+ */
+export async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches: PolledWatch[]): Promise<'ok' | 'throttled'> {
   const groupWatches = allWatches.filter((w) => w.term === group.term && w.crn === group.crn)
   const firstWatch = groupWatches[0]
-  if (!firstWatch) return
-  const section = await bannerFor(school.id).searchByCrn(group.term, group.crn, firstWatch.courseCode)
+  if (!firstWatch) return 'ok'
+  let section
+  try {
+    section = await bannerFor(school.id).searchByCrn(group.term, group.crn, firstWatch.courseCode)
+  } catch (err) {
+    if (isThrottled(err)) return 'throttled'
+    throw err
+  }
   if (!section) throw new Error(`[watcher:${school.id}] searchByCrn returned null for ${group.crn}`)
 
   for (const w of groupWatches) {
@@ -176,6 +200,7 @@ export async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches:
       throw err
     }
   }
+  return 'ok'
 }
 
 function startSchoolLoop(
