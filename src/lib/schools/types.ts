@@ -35,4 +35,10 @@ export interface BannerConfig {
    * once a student at the school has registered past a waitlist.
    */
   waitlistHoldsSeats?: boolean
+  /**
+   * A floor on the normal lane's poll interval, daytime and surge. Leave
+   * unset for the shared default. Does not change the overnight interval
+   * or the admin priority lane.
+   */
+  pollIntervalMs?: number
 }

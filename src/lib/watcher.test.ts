@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 
 vi.mock('./prisma', () => ({ prisma: {} }))
 vi.mock('./banner', () => ({ bannerFor: vi.fn() }))
@@ -6,10 +6,11 @@ vi.mock('./queue', () => ({ scheduleSeatAlert: vi.fn() }))
 vi.mock('./redis', () => ({ isSurgeMode: vi.fn() }))
 vi.mock('./watches', () => ({ applyDiff: vi.fn(), claimAlertSlot: vi.fn(), releaseAlertSlot: vi.fn(), logMetric: vi.fn(), MAX_ALERTS_PER_WATCH: 3 }))
 
-import { laneFilter, pollGroup, recordThrottleCycle, resetThrottleStreaks, THROTTLE_ALERT_CYCLES } from './watcher'
+import { laneFilter, pollGroup, recordThrottleCycle, resetThrottleStreaks, THROTTLE_ALERT_CYCLES, getInterval } from './watcher'
 import { bannerFor } from './banner'
 import { applyDiff, claimAlertSlot } from './watches'
 import { scheduleSeatAlert } from './queue'
+import { isSurgeMode } from './redis'
 import { BannerThrottledError } from './bannerErrors'
 import type { LiveSchool } from './schools'
 
@@ -65,6 +66,63 @@ describe('laneFilter', () => {
     expect(laneFilter('priority', undefined)).toBeNull()
     expect(laneFilter('priority', '  ')).toBeNull()
     expect(laneFilter('normal', undefined)).toEqual({})
+  })
+})
+
+describe('getInterval', () => {
+  const gsu = { id: 'gsu', banner: {} } as LiveSchool
+  const gatech = { id: 'gatech', banner: { pollIntervalMs: 180_000 } } as LiveSchool
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('a school with no pollIntervalMs behaves as before, daytime', async () => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-04T14:00:00'))
+    vi.mocked(isSurgeMode).mockResolvedValue(false)
+    const ms = await getInterval(gsu)
+    expect(ms).toBeGreaterThanOrEqual(90_000 * 0.85)
+    expect(ms).toBeLessThanOrEqual(90_000 * 1.15)
+  })
+
+  it('a school with no pollIntervalMs behaves as before, surge', async () => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-04T14:00:00'))
+    vi.mocked(isSurgeMode).mockResolvedValue(true)
+    const ms = await getInterval(gsu)
+    expect(ms).toBeGreaterThanOrEqual(75_000 * 0.85)
+    expect(ms).toBeLessThanOrEqual(75_000 * 1.15)
+  })
+
+  it('floors the daytime interval for a school with pollIntervalMs set', async () => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-04T14:00:00'))
+    vi.mocked(isSurgeMode).mockResolvedValue(false)
+    const ms = await getInterval(gatech)
+    expect(ms).toBeGreaterThanOrEqual(180_000 * 0.85)
+  })
+
+  it('floors the surge interval for a school with pollIntervalMs set', async () => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-04T14:00:00'))
+    vi.mocked(isSurgeMode).mockResolvedValue(true)
+    const ms = await getInterval(gatech)
+    expect(ms).toBeGreaterThanOrEqual(180_000 * 0.85)
+  })
+
+  it('leaves the overnight interval alone even with pollIntervalMs set', async () => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-04T03:00:00'))
+    const ms = await getInterval(gatech)
+    expect(ms).toBeGreaterThanOrEqual(900_000 * 0.85)
+    expect(ms).toBeLessThanOrEqual(900_000 * 1.15)
+    expect(isSurgeMode).not.toHaveBeenCalled()
   })
 })
 
