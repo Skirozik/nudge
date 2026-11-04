@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from './prisma'
 import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleCheckIn, scheduleFollowUp } from './queue'
-import { resolveTimezone, parseInTimezone } from './timezone'
+import { resolveTimezone, parseInTimezone, localNow, dateProblem } from './timezone'
 import { listWatches, cancelWatch } from './watches'
 import { watchCourse, setSchool } from './seatsnipeTools'
 import { getSchool, liveSchools } from './schools'
@@ -232,7 +232,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
 ]
 
-async function executeTool(
+export async function executeTool(
   name: string,
   input: Record<string, unknown>,
   userId: string,
@@ -250,13 +250,17 @@ async function executeTool(
       }
       const offsets = reminder_offsets && reminder_offsets.length > 0 ? reminder_offsets : [24]
 
+      const dueAt = parseInTimezone(due_at, userTz)
+      const problem = dateProblem(dueAt, userTz)
+      if (problem) return { error: problem }
+
       const assignment = await prisma.assignment.create({
         data: {
           userId,
           title,
           course: course ?? null,
           // Wall-clock in the user's tz — corrects agent-stamped offsets across DST switches
-          dueAt: parseInTimezone(due_at, userTz),
+          dueAt,
           reminderOffsets: offsets,
           nudgeMode: nudge_mode ?? 'basic',
           status: 'open',
@@ -337,7 +341,10 @@ async function executeTool(
 
     case 'set_reminder': {
       const { message, fire_at, persistent } = input as { message: string; fire_at: string; persistent?: boolean }
-      await scheduleOneOffReminder(userId, message, parseInTimezone(fire_at, userTz), persistent ?? false)
+      const fireAt = parseInTimezone(fire_at, userTz)
+      const problem = dateProblem(fireAt, userTz)
+      if (problem) return { error: problem }
+      await scheduleOneOffReminder(userId, message, fireAt, persistent ?? false)
       return { success: true, fire_at }
     }
 
@@ -453,28 +460,7 @@ export async function runAgent(userId: string, userMessage: string, opts?: { lat
   const tz = user?.timezone ?? 'America/New_York'
 
   const nowUtc = new Date()
-  let nowLocal: string
-  try {
-    nowLocal = nowUtc.toLocaleString('en-US', {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    })
-  } catch {
-    nowLocal = nowUtc.toLocaleString('en-US', {
-      timeZone: 'America/New_York',
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    })
-  }
+  const nowLocal = localNow(nowUtc, tz)
 
   const tzOffsetStr = (() => {
     try {

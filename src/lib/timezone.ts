@@ -109,3 +109,33 @@ export function parseInTimezone(iso: string, tz: string): Date {
     return fallback
   }
 }
+
+/** "Tue, Nov 3, 2026, 5:30 PM" in their timezone. The year matters: without it the model guesses one. */
+export function localNow(now: Date, tz: string): string {
+  const format = (timeZone: string) =>
+    now.toLocaleString('en-US', {
+      timeZone,
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+  try {
+    return format(tz)
+  } catch {
+    return format('America/New_York')
+  }
+}
+
+// Room for "remind me now" and a slow reply, well short of a real date mistake
+const PAST_GRACE_MS = 10 * 60 * 1000
+
+/** Why a date the agent picked can't be saved, or null if it's fine. Goes back to the model so it can fix it. */
+export function dateProblem(when: Date, tz: string, now = new Date()): string | null {
+  if (Number.isNaN(when.getTime())) return "That date couldn't be read. Use ISO 8601 with their UTC offset."
+  if (when.getTime() >= now.getTime() - PAST_GRACE_MS) return null
+  return `Nothing saved: that date is in the past. It's now ${localNow(now, tz)}. Check the year and the date, then try again. If they really mean a past time, tell them it has already passed.`
+}
