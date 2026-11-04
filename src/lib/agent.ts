@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from './prisma'
 import { scheduleReminders, cancelPendingReminders, scheduleOneOffReminder, scheduleCheckIn, scheduleFollowUp } from './queue'
-import { resolveTimezone, parseInTimezone } from './timezone'
+import { resolveTimezone, parseInTimezone, localNow, dateProblem } from './timezone'
 import { listWatches, cancelWatch } from './watches'
 import { watchCourse, setSchool } from './seatsnipeTools'
 import { getSchool, liveSchools } from './schools'
@@ -232,7 +232,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
 ]
 
-async function executeTool(
+export async function executeTool(
   name: string,
   input: Record<string, unknown>,
   userId: string,
@@ -250,13 +250,17 @@ async function executeTool(
       }
       const offsets = reminder_offsets && reminder_offsets.length > 0 ? reminder_offsets : [24]
 
+      const dueAt = parseInTimezone(due_at, userTz)
+      const problem = dateProblem(dueAt, userTz)
+      if (problem) return { error: problem }
+
       const assignment = await prisma.assignment.create({
         data: {
           userId,
           title,
           course: course ?? null,
           // Wall-clock in the user's tz — corrects agent-stamped offsets across DST switches
-          dueAt: parseInTimezone(due_at, userTz),
+          dueAt,
           reminderOffsets: offsets,
           nudgeMode: nudge_mode ?? 'basic',
           status: 'open',
@@ -337,7 +341,10 @@ async function executeTool(
 
     case 'set_reminder': {
       const { message, fire_at, persistent } = input as { message: string; fire_at: string; persistent?: boolean }
-      await scheduleOneOffReminder(userId, message, parseInTimezone(fire_at, userTz), persistent ?? false)
+      const fireAt = parseInTimezone(fire_at, userTz)
+      const problem = dateProblem(fireAt, userTz)
+      if (problem) return { error: problem }
+      await scheduleOneOffReminder(userId, message, fireAt, persistent ?? false)
       return { success: true, fire_at }
     }
 
@@ -453,28 +460,7 @@ export async function runAgent(userId: string, userMessage: string, opts?: { lat
   const tz = user?.timezone ?? 'America/New_York'
 
   const nowUtc = new Date()
-  let nowLocal: string
-  try {
-    nowLocal = nowUtc.toLocaleString('en-US', {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    })
-  } catch {
-    nowLocal = nowUtc.toLocaleString('en-US', {
-      timeZone: 'America/New_York',
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    })
-  }
+  const nowLocal = localNow(nowUtc, tz)
 
   const tzOffsetStr = (() => {
     try {
@@ -536,6 +522,8 @@ SEAT WATCH RULES:
 - Students can switch schools any time by telling you; call set_school. Their existing watches keep running and only new watches use the new school.
 - To show sections: call watch_course with "SUBJECT COURSENUMBER" e.g. "CSC 1301L". Reply with a numbered list showing CRN, seats, and schedule. Example: "1. CRN 90474, Sec 010 MWF 9–9:50, Jones (5 seats open)\n2. CRN 90476, Sec 002 MWF 9–9:50, Smith (FULL)"
 - A section with professorGrades gets them on its line, short: "avg GPA 3.12, 16% D/F/W". That's the school's published grade data for that professor in this course since the given term; avgGpa is on the school's scale, and dfwRate is the share who got a D or F or withdrew. Mention the source and the "since" term once per reply, not per line. Sections without professorGrades get nothing about grades. Never estimate or invent grade data, and when they ask which professor to take, compare only what professorGrades says.
+- A section with onWaitlist has its open seats held for the people waiting, so its seats is 0 even when the school's site shows some open. Show it as full with the count: "(FULL, 12 on the waitlist)". Never say it has seats, or tell them to hurry. If they watch one, say you'll text when a seat is actually free, which means once nobody's waiting, and tell them to join the waitlist too because people on it get seats first. To join, they add the section on their school's site and pick the waitlist option in its Action menu.
+- If a new watch comes back with sectionNote, that's the school's note on the section. If it says seats are reserved or limited to certain students, tell them in one short sentence, because the school might refuse them even when seats are open. Don't mention other notes.
 - To create a watch after user picks: call watch_course with "SUBJECT COURSENUMBER CRN" e.g. "CSC 1301L 90474". Always include the full course code — the API requires it.
 - NEVER guess or invent a CRN. Only use CRNs returned by watch_course sections list.
 - Never say what they're watching, or that they already have a watch, from earlier messages. Watches end (every term, after 3 alerts, or when cancelled), so call list_watches. To add one, call watch_course, which says if it's already on.

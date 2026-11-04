@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parse, primaryInstructor, displayInstructor, clockTime, pickActiveTerm } from './banner'
+import { parse, primaryInstructor, displayInstructor, clockTime, pickActiveTerm, takeableSeats, parseSectionComment } from './banner'
 
 // Georgia Tech's real getTerms response, pulled live on 2026-11-03
 const GATECH_TERMS = [
@@ -34,6 +34,61 @@ describe('primaryInstructor', () => {
   it('is null for Staff sections', () => {
     expect(primaryInstructor(undefined)).toBeNull()
     expect(primaryInstructor([])).toBeNull()
+  })
+})
+
+// Real GSU Spring 2027 numbers. The first two were tried in GoSOLAR and refused.
+describe('takeableSeats', () => {
+  it('counts none when people are waiting and there are fewer seats than people', () => {
+    // SOCI 1160 CRN 14257: "Open - Reserved for Wait List"
+    expect(takeableSeats({ seatsAvailable: 1, waitCount: 12 })).toBe(0)
+  })
+
+  it('counts none when people are waiting, even with more seats than people', () => {
+    // POLS 3800 CRN 16225: "Open seats are reserved for specific student groups"
+    expect(takeableSeats({ seatsAvailable: 2, waitCount: 1 })).toBe(0)
+  })
+
+  it('counts the seats when nobody is waiting', () => {
+    // CSC 4350 CRN 10104, cross-listed with room in the pool
+    expect(takeableSeats({ seatsAvailable: 39, waitCount: 0, crossListAvailable: 44 })).toBe(39)
+  })
+
+  it('counts none when the cross-listed pool is full', () => {
+    expect(takeableSeats({ seatsAvailable: 2, waitCount: 0, crossListAvailable: 0 })).toBe(0)
+  })
+
+  it('caps at what is left in the cross-listed pool', () => {
+    expect(takeableSeats({ seatsAvailable: 5, waitCount: 0, crossListAvailable: 2 })).toBe(2)
+  })
+
+  it('ignores the pool when the section is not cross-listed', () => {
+    expect(takeableSeats({ seatsAvailable: 5, waitCount: 0, crossListAvailable: null })).toBe(5)
+  })
+
+  it('handles over-enrolled sections and a school that sends no waitlist data', () => {
+    expect(takeableSeats({ seatsAvailable: -3, waitCount: 0 })).toBe(0)
+    expect(takeableSeats({ seatsAvailable: 4 })).toBe(4)
+  })
+})
+
+describe('parseSectionComment', () => {
+  const panel = (comment: string) =>
+    `<span>Subject Comments:</span><section>None</section><span>Course Comments:</span><section><p>Critical Thinking.</p><p>Critical Thinking.</p></section><!-- note --><span>Section Comments:</span><section>${comment}</section>`
+
+  it('reads the section note', () => {
+    expect(parseSectionComment(panel('Includes reserved seats for students in the Political Science online BA program.'))).toBe(
+      'Includes reserved seats for students in the Political Science online BA program.'
+    )
+  })
+
+  it('is null when the note says None, or the panel has no section comments', () => {
+    expect(parseSectionComment(panel('None'))).toBeNull()
+    expect(parseSectionComment('<html>Sign in</html>')).toBeNull()
+  })
+
+  it('drops a repeated line', () => {
+    expect(parseSectionComment(panel('<p>Honors only.</p><p>Honors only.</p>'))).toBe('Honors only.')
   })
 })
 
@@ -81,6 +136,11 @@ describe('pickActiveTerm', () => {
 })
 
 describe('parse', () => {
+  it('keeps what the site shows apart from what a student can get', () => {
+    const s = parse({ courseReferenceNumber: '14257', subject: 'SOCI', courseNumber: '1160', sequenceNumber: '006', seatsAvailable: 1, waitCount: 12 })
+    expect(s).toMatchObject({ seatsShown: 1, takeableSeats: 0, waitCount: 12 })
+  })
+
   it('writes a readable label', () => {
     const s = parse({
       courseReferenceNumber: '12936', subject: 'MATH', courseNumber: '2212', sequenceNumber: '032',

@@ -1,5 +1,5 @@
 import { prisma } from './prisma'
-import { bannerFor } from './banner'
+import { bannerFor, type SectionInfo } from './banner'
 import { createWatch, logMetric } from './watches'
 import { getSchool, isLive, liveSchools, resolveSchool } from './schools'
 import { gradesByInstructor } from './grades/stats'
@@ -20,6 +20,11 @@ export function isPendingFresh(savedAt: Date | null | undefined, now = Date.now(
 
 function liveSchoolNames(): string[] {
   return liveSchools().map((s) => s.shortName)
+}
+
+/** Only on sections with a waitlist, so the model can't mistake held seats for open ones. */
+function waitlistFields(s: SectionInfo): Record<string, number> {
+  return s.waitCount > 0 ? { onWaitlist: s.waitCount, seatsHeldForWaitlist: s.seatsShown } : {}
 }
 
 /**
@@ -78,16 +83,19 @@ export async function watchCourse(
       courseCode: section.courseCode,
       sectionLabel: section.sectionLabel,
       source: user.source ?? null,
-      initialSeats: section.seatsAvailable,
+      initialSeats: section.takeableSeats,
     })
     if (result.error) return { error: result.error }
+    const sectionNote = await banner.sectionComment(activeTerm, specificCrn)
     return {
       success: true,
       school: school.shortName,
       crn: section.crn,
       courseCode: section.courseCode,
       sectionLabel: section.sectionLabel,
-      seatsAvailable: section.seatsAvailable,
+      seats: section.takeableSeats,
+      ...waitlistFields(section),
+      ...(sectionNote && { sectionNote }),
     }
   }
 
@@ -101,7 +109,8 @@ export async function watchCourse(
         index: i + 1,
         crn: s.crn,
         label: s.sectionLabel,
-        seats: s.seatsAvailable,
+        seats: s.takeableSeats,
+        ...waitlistFields(s),
         ...(g && { professorGrades: g }),
       }
     }),
