@@ -287,7 +287,7 @@ export async function POST(req: NextRequest) {
       }
       await setSurgeMode(on, target?.id, SCHOOLS.map((sc) => sc.id))
       const where = target ? ` for ${target.shortName}` : ''
-      await sendMessage(normalizedPhone, on ? `surge on${where} — polling every ~75s` : `surge off${where} — polling every 5min`)
+      await sendMessage(normalizedPhone, on ? `surge on${where} — polling every ~75s` : `surge off${where} — polling every ~90s (15min overnight)`)
       return NextResponse.json({ ok: true })
     }
 

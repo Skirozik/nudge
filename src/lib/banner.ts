@@ -23,6 +23,14 @@ const UA = 'SeatSnipe/1.0 (nudgebuddy.net) seat-availability-monitor zacharyinya
 const TERM_CACHE_MS = 6 * 60 * 60 * 1000 // re-check every 6h — a forever-cache serves the old term once the next registration period opens
 const RATE_MS = 500
 
+// A run of data: null answers can mean a dead session, not a throttle. Georgia
+// Tech answers an unrecognized session that way instead of with a login page,
+// so after this many in a row the session is dropped and the next search logs
+// in fresh. Fresh logins in a burst are what trigger the throttle, so that
+// happens at most once per RELOGIN_MIN_GAP_MS.
+export const NULLS_BEFORE_RELOGIN = 3
+export const RELOGIN_MIN_GAP_MS = 10 * 60 * 1000
+
 export function normalizeSubject(subject: string, aliases: Record<string, string>): string {
   const up = subject.toUpperCase()
   return aliases[up] ?? up
@@ -188,6 +196,8 @@ export class BannerClient {
   private cachedActiveTerm: string | null = null
   private cachedActiveTermAt = 0
   private lastRequestAt = 0
+  private consecutiveNulls = 0
+  private lastNullReloginAt = 0
 
   // Serialize this school's searches: the session state (cookies, selected term,
   // resetDataForm) is shared, and the rate limiter's read-then-set isn't atomic —
@@ -358,8 +368,18 @@ export class BannerClient {
     // data: null on a 200 is a silent throttle, not an empty class (that is data: []).
     // No retry here. Retrying right away would land in the same window.
     if (json.data === null) {
+      this.consecutiveNulls++
+      if (
+        this.consecutiveNulls >= NULLS_BEFORE_RELOGIN &&
+        Date.now() - this.lastNullReloginAt >= RELOGIN_MIN_GAP_MS
+      ) {
+        console.warn(`${this.tag} ${this.consecutiveNulls} data: null answers in a row, dropping the session so the next search logs in fresh`)
+        this.sessionCookies = ''
+        this.lastNullReloginAt = Date.now()
+      }
       throw new BannerThrottledError(`${this.tag} searchResults came back with data: null (throttled?)`)
     }
+    this.consecutiveNulls = 0
     return json.data ?? []
   }
 

@@ -105,12 +105,59 @@ export function laneFilter(lane: Lane, adminPhone: string | undefined): Record<s
   return lane === 'priority' ? { user: { phone } } : { NOT: { user: { phone } } }
 }
 
+/**
+ * How one pass over a lane went. 'throttled' means Banner answered with the
+ * silent throttle, 'ok' means at least one section came back for real, and
+ * 'idle' means neither (no watches, or only errors).
+ */
+export type CycleOutcome = 'ok' | 'throttled' | 'idle'
+
+/** Throttled cycles in a row for one school before the admin gets a text. */
+export const THROTTLE_ALERT_CYCLES = 5
+
+// Per school, across both lanes, since they share one Banner client
+const throttleStreaks = new Map<string, { cycles: number; notified: boolean }>()
+
+/** For tests. */
+export function resetThrottleStreaks(): void {
+  throttleStreaks.clear()
+}
+
+/**
+ * Texts the admin once per throttled stretch, after THROTTLE_ALERT_CYCLES
+ * throttled cycles in a row. The heartbeat keeps running while a school is
+ * throttled, so the dead-man check never notices this on its own.
+ */
+export async function recordThrottleCycle(
+  school: { id: string; shortName: string },
+  outcome: CycleOutcome,
+  notifyAdmin: (msg: string) => Promise<void>
+): Promise<void> {
+  if (outcome === 'idle') return
+  if (outcome === 'ok') {
+    throttleStreaks.delete(school.id)
+    return
+  }
+  const streak = throttleStreaks.get(school.id) ?? { cycles: 0, notified: false }
+  streak.cycles++
+  throttleStreaks.set(school.id, streak)
+  if (streak.cycles < THROTTLE_ALERT_CYCLES || streak.notified) return
+  streak.notified = true
+  try {
+    await notifyAdmin(
+      `⚠️ SeatSnipe: ${school.shortName} class search has looked throttled for ${streak.cycles} polls in a row, so its watches aren't being checked. Look at the worker logs.`
+    )
+  } catch (err) {
+    console.error(`[watcher:${school.id}] failed to text the admin about throttling:`, err)
+  }
+}
+
 /** Per-school loop state. */
 interface LoopState {
   consecutiveErrors: number
 }
 
-async function pollAll(school: LiveSchool, state: LoopState, lane: Record<string, unknown>): Promise<void> {
+async function pollAll(school: LiveSchool, state: LoopState, lane: Record<string, unknown>): Promise<CycleOutcome> {
   const watches = await prisma.watch.findMany({
     // The alertCount bound is a backstop: claimAlertSlot flips spent watches to
     // PAUSED, but this also drops any left ACTIVE by an older build or a crash.
@@ -132,6 +179,7 @@ async function pollAll(school: LiveSchool, state: LoopState, lane: Record<string
   // Once Banner throttles us, send no more requests this cycle. Hammering it
   // would only stretch the throttle out.
   let throttled = false
+  let anyOk = false
 
   await new Promise<void>((resolve) => {
     function done(): boolean {
@@ -147,6 +195,7 @@ async function pollAll(school: LiveSchool, state: LoopState, lane: Record<string
               throttled = true
               return
             }
+            anyOk = true
             state.consecutiveErrors = 0
           })
           .catch(() => { state.consecutiveErrors++ })
@@ -163,7 +212,9 @@ async function pollAll(school: LiveSchool, state: LoopState, lane: Record<string
   if (throttled) {
     console.warn(`[watcher:${school.id}] Banner is throttling, skipped the rest of this cycle`)
     try { await logMetric('banner_throttled', null, { school: school.id }) } catch {}
+    return 'throttled'
   }
+  return anyOk ? 'ok' : 'idle'
 }
 
 /**
@@ -207,7 +258,8 @@ function startSchoolLoop(
   school: LiveSchool,
   sendMessage: (phone: string, msg: string) => Promise<void>,
   lane: Lane,
-  filter: Record<string, unknown>
+  filter: Record<string, unknown>,
+  notifyAdmin: (msg: string) => Promise<void>
 ): void {
   const state: LoopState = { consecutiveErrors: 0 }
   const tag = lane === 'normal' ? `[watcher:${school.id}]` : `[watcher:${school.id}:priority]`
@@ -234,7 +286,8 @@ function startSchoolLoop(
       }
 
       try {
-        await pollAll(school, state, filter)
+        const outcome = await pollAll(school, state, filter)
+        await recordThrottleCycle(school, outcome, notifyAdmin)
       } catch (err) {
         console.error(`${tag} poll error:`, err)
         state.consecutiveErrors++
@@ -272,12 +325,17 @@ export function startWatcherLoop(sendMessage: (phone: string, msg: string) => Pr
     return
   }
   const priority = laneFilter('priority', process.env.ADMIN_PHONE)
+  const adminPhone = process.env.ADMIN_PHONE?.trim() ? normalizePhone(process.env.ADMIN_PHONE) : null
+  const notifyAdmin = async (msg: string): Promise<void> => {
+    if (adminPhone) await sendMessage(adminPhone, msg)
+    else console.warn(`[watcher] no ADMIN_PHONE, not sent: ${msg}`)
+  }
   for (const school of schools) {
     console.log(`[watcher] starting loop for ${school.shortName}`)
-    startSchoolLoop(school, sendMessage, 'normal', laneFilter('normal', process.env.ADMIN_PHONE)!)
+    startSchoolLoop(school, sendMessage, 'normal', laneFilter('normal', process.env.ADMIN_PHONE)!, notifyAdmin)
     if (priority) {
       console.log(`[watcher] starting priority loop for ${school.shortName} (admin watches, ~${PRIORITY_MS / 1000}s)`)
-      startSchoolLoop(school, sendMessage, 'priority', priority)
+      startSchoolLoop(school, sendMessage, 'priority', priority, notifyAdmin)
     }
   }
 }
