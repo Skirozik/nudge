@@ -14,11 +14,25 @@
  */
 
 import { getLiveSchool, type LiveSchool } from './schools'
+import { redis } from './redis'
 
 const UA = 'SeatSnipe/1.0 (nudgebuddy.net) seat-availability-monitor zacharyinyan@gmail.com'
 
 const TERM_CACHE_MS = 6 * 60 * 60 * 1000 // re-check every 6h — a forever-cache serves the old term once the next registration period opens
 const RATE_MS = 500
+
+// A login session is shared in Redis across every process talking to a school
+// (the always-on worker, and every Vercel instance the webhook scales to) so
+// a burst of concurrent students doesn't produce a burst of fresh logins —
+// observed on Georgia Tech's instance to get silently rate-limited into fake
+// "0 results" responses. This is a cache, not a source of truth: if the TTL
+// outlives Banner's real session, the existing 401/403 and non-JSON retry
+// paths below still catch it and re-login. If it's too short, the only cost
+// is an extra login. Either way is safe.
+const SHARED_SESSION_TTL_SEC = 20 * 60
+const LOGIN_LOCK_TTL_SEC = 15
+const LOGIN_LOCK_WAIT_MS = 400
+const LOGIN_LOCK_WAIT_ATTEMPTS = 5
 
 export function normalizeSubject(subject: string, aliases: Record<string, string>): string {
   const up = subject.toUpperCase()
@@ -144,7 +158,9 @@ export class BannerClient {
   private readonly origin: string
   private readonly tag: string
 
-  // Session state lives on the instance so each school keeps its own login
+  // In-memory fast path for this process. The source of truth a cold process
+  // checks first is Redis (see ensureSession) — this just avoids a round trip
+  // when this same instance already has what it needs.
   private sessionCookies = ''
   private sessionTerm = ''
   private cachedActiveTerm: string | null = null
@@ -205,6 +221,70 @@ export class BannerClient {
     }
   }
 
+  // ── Shared session (Redis) ───────────────────────────────────────────────────
+
+  private sessionKey(term: string): string {
+    return `banner:session:${this.school.id}:${term}`
+  }
+
+  /** Load a session another process already established. Best-effort: a Redis problem just means this process logs in itself. */
+  private async loadSharedSession(term: string): Promise<boolean> {
+    try {
+      const raw = await redis.get(this.sessionKey(term))
+      if (!raw) return false
+      const parsed = JSON.parse(raw) as { cookies?: string }
+      if (!parsed.cookies) return false
+      this.sessionCookies = parsed.cookies
+      this.sessionTerm = term
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private async saveSharedSession(term: string): Promise<void> {
+    try {
+      await redis.set(this.sessionKey(term), JSON.stringify({ cookies: this.sessionCookies }), 'EX', SHARED_SESSION_TTL_SEC)
+    } catch {
+      // best-effort — this process still has it in memory either way
+    }
+  }
+
+  private async clearSharedSession(term: string): Promise<void> {
+    try {
+      await redis.del(this.sessionKey(term))
+    } catch {
+      // best-effort
+    }
+  }
+
+  /** NX claim so only one process logs in at a time; others wait for it to publish the session. */
+  private async claimLoginLock(term: string): Promise<boolean> {
+    try {
+      return (await redis.set(`banner:session:lock:${this.school.id}:${term}`, '1', 'EX', LOGIN_LOCK_TTL_SEC, 'NX')) === 'OK'
+    } catch {
+      return true // can't coordinate without Redis — just log in directly
+    }
+  }
+
+  /** Ensure this process has a usable session: memory → shared Redis session → log in (coordinated so concurrent callers don't all log in at once). */
+  private async ensureSession(term: string): Promise<void> {
+    if (this.sessionCookies && this.sessionTerm === term) return
+    if (await this.loadSharedSession(term)) return
+
+    if (await this.claimLoginLock(term)) {
+      await this.selectTerm(term)
+      return
+    }
+    // Someone else is logging in right now — wait for them to publish it
+    for (let i = 0; i < LOGIN_LOCK_WAIT_ATTEMPTS; i++) {
+      await new Promise((r) => setTimeout(r, LOGIN_LOCK_WAIT_MS))
+      if (await this.loadSharedSession(term)) return
+    }
+    // They never published (crashed, or just slow) — log in ourselves rather than block forever
+    await this.selectTerm(term)
+  }
+
   // ── Session management ──────────────────────────────────────────────────────
 
   private async selectTerm(term: string): Promise<void> {
@@ -247,6 +327,7 @@ export class BannerClient {
 
     this.sessionCookies = cookies
     this.sessionTerm = term
+    await this.saveSharedSession(term)
     console.log(`${this.tag} session established for term ${term}`)
   }
 
@@ -271,7 +352,7 @@ export class BannerClient {
 
   private async doSearchInner(params: Record<string, string>, retried = false): Promise<RawSection[]> {
     const term = params.txt_term
-    if (!this.sessionCookies || this.sessionTerm !== term) await this.selectTerm(term)
+    await this.ensureSession(term)
 
     await this.resetDataForm()
     await this.rateLimit()
@@ -296,6 +377,7 @@ export class BannerClient {
 
     if ((res.status === 401 || res.status === 403) && !retried) {
       this.sessionCookies = ''
+      await this.clearSharedSession(term)
       await this.selectTerm(term)
       return this.doSearchInner(params, true)
     }
@@ -312,6 +394,7 @@ export class BannerClient {
       if (!retried) {
         console.log(`${this.tag} non-JSON response (session expired?) — re-establishing session`)
         this.sessionCookies = ''
+        await this.clearSharedSession(term)
         await this.selectTerm(term)
         return this.doSearchInner(params, true)
       }
