@@ -105,6 +105,16 @@ export function clockTime(hhmm: string): string {
   return `${h % 12 || 12}:${hhmm.slice(2)}${h < 12 ? 'am' : 'pm'}`
 }
 
+/**
+ * Pick the active term from Banner's getTerms list: the first one not marked
+ * "(View Only)". Both GSU and Georgia Tech mark a term View Only while its
+ * registration hasn't opened yet, and mark Language Institute terms View Only
+ * permanently — so this same rule clears both cases on both schools.
+ */
+export function pickActiveTerm<T extends { description: string }>(terms: T[]): T | undefined {
+  return terms.find((t) => !t.description.includes('View Only'))
+}
+
 export function parse(raw: RawSection): SectionInfo {
   const subject = raw.subject ?? ''
   const number = raw.courseNumber ?? ''
@@ -189,7 +199,7 @@ export class BannerClient {
         headers: { 'User-Agent': UA },
       })
       const terms = (await res.json()) as Array<{ code: string; description: string }>
-      const active = terms.find((t) => !t.description.includes('View Only'))
+      const active = pickActiveTerm(terms)
       if (!active) throw new Error(`${this.tag} no active term found in getTerms`)
       if (this.cachedActiveTerm && this.cachedActiveTerm !== active.code) {
         console.log(`${this.tag} active term changed: ${this.cachedActiveTerm} → ${active.code}`)
