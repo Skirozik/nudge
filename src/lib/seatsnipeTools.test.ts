@@ -31,13 +31,15 @@ const mockBannerFor = bannerFor as ReturnType<typeof vi.fn>
 const mockGrades = gradesByInstructor as ReturnType<typeof vi.fn>
 
 const SECTIONS = [
-  { crn: '90474', courseCode: 'CSC 1301', sectionLabel: 'Sec 010, MWF 9–9:50, Jones, Ann', seatsAvailable: 0, maximumEnrollment: 40, instructor: 'Jones, Ann' },
-  { crn: '90476', courseCode: 'CSC 1301', sectionLabel: 'Sec 002, MWF 9–9:50, Smith, Bo', seatsAvailable: 3, maximumEnrollment: 40, instructor: 'Smith, Bo' },
+  { crn: '90474', courseCode: 'CSC 1301', sectionLabel: 'Sec 010, MWF 9–9:50, Jones, Ann', seatsShown: 0, takeableSeats: 0, waitCount: 0, maximumEnrollment: 40, instructor: 'Jones, Ann' },
+  { crn: '90476', courseCode: 'CSC 1301', sectionLabel: 'Sec 002, MWF 9–9:50, Smith, Bo', seatsShown: 3, takeableSeats: 3, waitCount: 0, maximumEnrollment: 40, instructor: 'Smith, Bo' },
+  { crn: '90477', courseCode: 'CSC 1301', sectionLabel: 'Sec 004, TTh 2:00pm–3:15pm, Lee, Kim', seatsShown: 2, takeableSeats: 0, waitCount: 12, maximumEnrollment: 40, instructor: 'Lee, Kim' },
 ]
 const fakeBanner = {
   getActiveTerm: vi.fn(async () => '202701'),
   normalizeSubject: vi.fn((s: string) => (s.toUpperCase() === 'CSCI' ? 'CSC' : s.toUpperCase())),
   searchByCourse: vi.fn(async () => SECTIONS),
+  sectionComment: vi.fn(async (): Promise<string | null> => null),
 }
 
 beforeEach(() => {
@@ -92,8 +94,30 @@ describe('watchCourse guardrail', () => {
 
     const result = await watchCourse('u1', { query: 'CSC 1301' })
 
-    expect(result.sections).toHaveLength(2)
+    expect(result.sections).toHaveLength(3)
     expect(mockCreateWatch).not.toHaveBeenCalled()
+  })
+
+  it('shows held seats as 0, with the waitlist next to them', async () => {
+    findUser.mockResolvedValueOnce({ school: 'gsu', source: null })
+    const sections = (await watchCourse('u1', { query: 'CSC 1301' })).sections as Array<Record<string, unknown>>
+    expect(sections[2]).toMatchObject({ crn: '90477', seats: 0, onWaitlist: 12, seatsHeldForWaitlist: 2 })
+    expect(sections[1]).toMatchObject({ crn: '90476', seats: 3 })
+    expect(sections[1]).not.toHaveProperty('onWaitlist')
+  })
+
+  it('starts a watch on held seats at 0, so it can still alert when they free up', async () => {
+    findUser.mockResolvedValueOnce({ school: 'gsu', source: null })
+    const result = await watchCourse('u1', { query: 'CSC 1301 90477' })
+    expect(mockCreateWatch).toHaveBeenCalledWith(expect.objectContaining({ crn: '90477', initialSeats: 0 }))
+    expect(result).toMatchObject({ success: true, seats: 0, onWaitlist: 12 })
+  })
+
+  it("passes along the school's note on a new watch", async () => {
+    findUser.mockResolvedValueOnce({ school: 'gsu', source: null })
+    fakeBanner.sectionComment.mockResolvedValueOnce('Includes reserved seats for students in the online BA program.')
+    const result = await watchCourse('u1', { query: 'CSC 1301 90476' })
+    expect(result.sectionNote).toMatch(/reserved seats/)
   })
 
   it("puts each professor's grade history on their own sections only", async () => {
@@ -103,7 +127,7 @@ describe('watchCourse guardrail', () => {
 
     const result = await watchCourse('u1', { query: 'CSC 1301' })
 
-    expect(mockGrades).toHaveBeenCalledWith('gsu', 'CSC 1301', '202701', ['Jones, Ann', 'Smith, Bo'])
+    expect(mockGrades).toHaveBeenCalledWith('gsu', 'CSC 1301', '202701', ['Jones, Ann', 'Smith, Bo', 'Lee, Kim'])
     const [first, second] = result.sections as Array<Record<string, unknown>>
     expect(first.professorGrades).toEqual(jones)
     expect(second).not.toHaveProperty('professorGrades')
@@ -139,7 +163,7 @@ describe('setSchool', () => {
       data: { school: 'gsu', pendingWatchQuery: null, pendingWatchAt: null },
     })
     expect(result).toMatchObject({ success: true, school: 'GSU', savedRequest: 'CSC 1301' })
-    expect((result.savedRequestResult as { sections: unknown[] }).sections).toHaveLength(2)
+    expect((result.savedRequestResult as { sections: unknown[] }).sections).toHaveLength(3)
   })
 
   it('drops a saved request older than 24 hours', async () => {

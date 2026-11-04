@@ -152,7 +152,7 @@ async function pollAll(school: LiveSchool, state: LoopState, lane: Record<string
   })
 }
 
-async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches: PolledWatch[]): Promise<void> {
+export async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches: PolledWatch[]): Promise<void> {
   const groupWatches = allWatches.filter((w) => w.term === group.term && w.crn === group.crn)
   const firstWatch = groupWatches[0]
   if (!firstWatch) return
@@ -160,14 +160,14 @@ async function pollGroup(school: LiveSchool, group: CrnGroup, allWatches: Polled
   if (!section) throw new Error(`[watcher:${school.id}] searchByCrn returned null for ${group.crn}`)
 
   for (const w of groupWatches) {
-    const { transition, seatEventId } = await applyDiff(w, section.seatsAvailable)
-    const claim = await claimAlertSlot(w, section.seatsAvailable, transition)
+    const { transition, seatEventId } = await applyDiff(w, section.takeableSeats)
+    const claim = await claimAlertSlot(w, section.takeableSeats, transition)
     if (!claim) continue
     try {
       await scheduleSeatAlert({
         watchId: w.id,
         alertNumber: claim.alertNumber,
-        seats: section.seatsAvailable,
+        seats: section.takeableSeats,
         seatEventId,
       })
     } catch (err) {

@@ -381,15 +381,15 @@ async function recoverOnStartup(): Promise<void> {
         if (!section) continue
         const groupWatches = staleWatches.filter((sw) => sectionKey(sw) === key)
         for (const gw of groupWatches) {
-          const { transition, seatEventId } = await applyDiff(gw, section.seatsAvailable)
+          const { transition, seatEventId } = await applyDiff(gw, section.takeableSeats)
           // Same claim as the normal poll path, so recovery can't double-alert.
-          const claim = await claimAlertSlot(gw, section.seatsAvailable, transition)
+          const claim = await claimAlertSlot(gw, section.takeableSeats, transition)
           if (!claim) continue
           try {
             await scheduleSeatAlert({
               watchId: gw.id,
               alertNumber: claim.alertNumber,
-              seats: section.seatsAvailable,
+              seats: section.takeableSeats,
               seatEventId,
             })
           } catch (err) {

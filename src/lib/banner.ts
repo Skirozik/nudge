@@ -55,6 +55,8 @@ interface RawSection {
   sequenceNumber?: string
   seatsAvailable?: number
   maximumEnrollment?: number
+  waitCount?: number
+  crossListAvailable?: number | null
   faculty?: Array<{ displayName?: string; primaryIndicator?: boolean }>
   meetingsFaculty?: Array<{
     meetingTime?: {
@@ -73,7 +75,12 @@ export interface SectionInfo {
   crn: string
   courseCode: string
   sectionLabel: string
-  seatsAvailable: number
+  // What the school's site shows as open. Not the same as seats a student can get.
+  seatsShown: number
+  // Seats a student could actually register for right now. Alerts run on this.
+  takeableSeats: number
+  // People on the waitlist
+  waitCount: number
   maximumEnrollment: number
   // Instructor of record as Banner spells it ("Miller, Joshua G."), null for Staff
   instructor: string | null
@@ -105,6 +112,32 @@ export function clockTime(hhmm: string): string {
   return `${h % 12 || 12}:${hhmm.slice(2)}${h < 12 ? 'am' : 'pm'}`
 }
 
+/**
+ * Seats a student can actually get. With anyone on the waitlist the open seats
+ * are held for them: GSU refuses with "Open - Reserved for Wait List" (SOCI 1160,
+ * 1 seat, 12 waiting). A cross-listed section also needs room in the shared pool.
+ */
+export function takeableSeats(raw: Pick<RawSection, 'seatsAvailable' | 'waitCount' | 'crossListAvailable'>): number {
+  const seats = Math.max(0, raw.seatsAvailable ?? 0)
+  if ((raw.waitCount ?? 0) > 0) return 0
+  return raw.crossListAvailable == null ? seats : Math.min(seats, Math.max(0, raw.crossListAvailable))
+}
+
+/** The "Section Comments" text from Banner's class details panel, or null when there are none. */
+export function parseSectionComment(html: string): string | null {
+  const lines = html
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, '\n')
+    .replace(/&amp;/g, '&')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+  const at = lines.indexOf('Section Comments:')
+  if (at < 0) return null
+  const text = [...new Set(lines.slice(at + 1))].join(' ')
+  return text && text !== 'None' ? text : null
+}
+
 export function parse(raw: RawSection): SectionInfo {
   const subject = raw.subject ?? ''
   const number = raw.courseNumber ?? ''
@@ -131,7 +164,9 @@ export function parse(raw: RawSection): SectionInfo {
     sectionLabel: `Sec ${seq}${days ? `, ${days}` : ''} ${time}, ${instructor}`.trim(),
     // Banner reports negative values for over-enrolled sections; clamp so they
     // read as "full" rather than poisoning the 0→N edge detection.
-    seatsAvailable: Math.max(0, raw.seatsAvailable ?? 0),
+    seatsShown: Math.max(0, raw.seatsAvailable ?? 0),
+    takeableSeats: takeableSeats(raw),
+    waitCount: Math.max(0, raw.waitCount ?? 0),
     maximumEnrollment: raw.maximumEnrollment ?? 0,
     instructor: instructorOfRecord,
   }
@@ -338,6 +373,28 @@ export class BannerClient {
       return match ? parse(match) : null
     } catch (err) {
       console.error(`${this.tag} searchByCrn(${crn}):`, err)
+      return null
+    }
+  }
+
+  /**
+   * The school's note on one section, such as "Includes reserved seats for students
+   * in the online BA program". Banner has no field for that, so the note is the only
+   * sign of it. Best effort: a watch still starts without it.
+   */
+  async sectionComment(term: string, crn: string): Promise<string | null> {
+    try {
+      return await this.serialize(async () => {
+        if (!this.sessionCookies || this.sessionTerm !== term) await this.selectTerm(term)
+        await this.rateLimit()
+        const qs = new URLSearchParams({ term, courseReferenceNumber: crn })
+        const res = await fetch(`${this.base}/ssb/searchResults/getClassDetails?${qs}`, {
+          headers: { 'User-Agent': UA, 'X-Requested-With': 'XMLHttpRequest', cookie: this.sessionCookies },
+        })
+        return res.ok ? parseSectionComment(await res.text()) : null
+      })
+    } catch (err) {
+      console.error(`${this.tag} sectionComment(${crn}):`, err)
       return null
     }
   }
