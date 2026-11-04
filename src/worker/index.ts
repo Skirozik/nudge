@@ -5,14 +5,16 @@ import { prisma } from '../lib/prisma'
 import { sendMessage } from '../lib/bluebubbles'
 import { runAgent } from '../lib/agent'
 import { appendAssistantMessage } from '../lib/conversation'
-import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleSeatAlert } from '../lib/queue'
+import { reminderQueue, enqueueReminder, scheduleFollowUp, scheduleSeatAlert, type SeatAlertJobData } from '../lib/queue'
+import { processSeatAlertJob } from '../lib/seatAlertJob'
+import { afterSend } from '../lib/afterSend'
 import { normalizePhone } from '../lib/phone'
 import { startWatcherLoop, sectionKey } from '../lib/watcher'
 import { startOutageMonitor, handleServerFailure, markOutage } from '../lib/outage'
-import { applyDiff, claimAlertSlot, releaseAlertSlot, logMetric, MAX_ALERTS_PER_WATCH, handleSeatAlertJobFailed } from '../lib/watches'
+import { applyDiff, claimAlertSlot, releaseAlertSlot, MAX_ALERTS_PER_WATCH, handleSeatAlertJobFailed } from '../lib/watches'
 import { bannerFor } from '../lib/banner'
 import { isThrottled } from '../lib/bannerErrors'
-import { getSchool, getLiveSchool, liveSchools } from '../lib/schools'
+import { getLiveSchool, liveSchools } from '../lib/schools'
 import { claimBroadcastSend } from '../lib/broadcast'
 import { createUser, runWelcome } from '../lib/onboarding'
 import { isOptOut, isReaction, OPT_OUT_REPLY } from '../lib/inbound'
@@ -307,7 +309,10 @@ async function recoverMissedMessages(): Promise<void> {
       const reply = welcomed ? '' : await runAgent(user.id, body, { lateReply: true })
       if (reply) {
         await sendMessage(normalized, reply)
-        await prisma.message.create({ data: { userId: user.id, direction: 'out', body: reply } })
+        // Outside the catch below, which would text them that the servers are down
+        await afterSend(`Logging replayed reply to user ${user.id}`, () =>
+          prisma.message.create({ data: { userId: user!.id, direction: 'out', body: reply } })
+        )
       }
     } catch (err) {
       console.error(`[worker] Failed to replay missed message from ${normalized}:`, err)
@@ -524,13 +529,15 @@ const worker = new Worker(
 
       const message = await generateNagMessage(nagTitle, nagCourse, followUpNumber)
       await sendMessage(phone, message)
-      await prisma.message.create({ data: { userId, direction: 'out', body: message } })
-      await appendToConversation(userId, message)
+      await afterSend(`Logging follow-up for user ${userId}`, () => prisma.message.create({ data: { userId, direction: 'out', body: message } }))
+      await afterSend(`Conversation for follow-up to user ${userId}`, () => appendToConversation(userId, message))
 
       console.log(`[worker] Sent follow-up #${followUpNumber + 1} for user ${userId}`)
 
       if (followUpNumber < 4) {
-        await scheduleFollowUp({ assignmentId, oneOffMessage, userId, followUpNumber: followUpNumber + 1, sentAfter })
+        await afterSend(`Scheduling follow-up #${followUpNumber + 2} for user ${userId}`, () =>
+          scheduleFollowUp({ assignmentId, oneOffMessage, userId, followUpNumber: followUpNumber + 1, sentAfter })
+        )
       }
       return
     }
@@ -547,14 +554,18 @@ const worker = new Worker(
       const msg = `hey did you submit your ${label}?`
       const sentAt = new Date()
       await sendMessage(assignment.user.phone, msg)
-      await prisma.assignment.update({ where: { id: assignmentId }, data: { checkInAt: sentAt } })
-      await prisma.message.create({ data: { userId, direction: 'out', body: msg } })
-      await appendToConversation(userId, msg)
+      await afterSend(`Saving check-in time for assignment ${assignmentId}`, () =>
+        prisma.assignment.update({ where: { id: assignmentId }, data: { checkInAt: sentAt } })
+      )
+      await afterSend(`Logging check-in for user ${userId}`, () => prisma.message.create({ data: { userId, direction: 'out', body: msg } }))
+      await afterSend(`Conversation for check-in to user ${userId}`, () => appendToConversation(userId, msg))
 
-      await reminderQueue.add(
-        'send-checkin-followup',
-        { assignmentId, userId, followUpNumber: 0, sentAfter: sentAt.toISOString() },
-        { delay: 60 * 60 * 1000, attempts: 3, backoff: { type: 'fixed', delay: 60_000 }, removeOnComplete: true, removeOnFail: false }
+      await afterSend(`Scheduling check-in follow-up for assignment ${assignmentId}`, () =>
+        reminderQueue.add(
+          'send-checkin-followup',
+          { assignmentId, userId, followUpNumber: 0, sentAfter: sentAt.toISOString() },
+          { delay: 60 * 60 * 1000, attempts: 3, backoff: { type: 'fixed', delay: 60_000 }, removeOnComplete: true, removeOnFail: false }
+        )
       )
       return
     }
@@ -581,49 +592,21 @@ const worker = new Worker(
       const msg = nags[followUpNumber]
       const nextSentAt = new Date()
       await sendMessage(assignment.user.phone, msg)
-      await prisma.message.create({ data: { userId, direction: 'out', body: msg } })
-      await appendToConversation(userId, msg)
+      await afterSend(`Logging check-in follow-up for user ${userId}`, () => prisma.message.create({ data: { userId, direction: 'out', body: msg } }))
+      await afterSend(`Conversation for check-in follow-up to user ${userId}`, () => appendToConversation(userId, msg))
 
-      await reminderQueue.add(
-        'send-checkin-followup',
-        { assignmentId, userId, followUpNumber: followUpNumber + 1, sentAfter: nextSentAt.toISOString() },
-        { delay: 60 * 60 * 1000, attempts: 3, backoff: { type: 'fixed', delay: 60_000 }, removeOnComplete: true, removeOnFail: false }
+      await afterSend(`Scheduling check-in follow-up for assignment ${assignmentId}`, () =>
+        reminderQueue.add(
+          'send-checkin-followup',
+          { assignmentId, userId, followUpNumber: followUpNumber + 1, sentAfter: nextSentAt.toISOString() },
+          { delay: 60 * 60 * 1000, attempts: 3, backoff: { type: 'fixed', delay: 60_000 }, removeOnComplete: true, removeOnFail: false }
+        )
       )
       return
     }
 
     if (job.name === 'send-seat-alert') {
-      const { watchId, seatEventId, seats, alertNumber } = job.data as {
-        watchId: string
-        seatEventId: string | null
-        seats: number
-        alertNumber: number
-      }
-      const watch = await prisma.watch.findUnique({
-        where: { id: watchId },
-        include: { user: true },
-      })
-      // PAUSED is expected on the final alert — claimAlertSlot retires the watch
-      // at claim time — so gate on the states that actually mean "don't send".
-      const dead = watch && ['CANCELLED', 'EXPIRED', 'FULFILLED'].includes(watch.status)
-      if (!watch || dead || watch.user.optedOut) return
-
-      const courseLabel = watch.sectionLabel ? `${watch.courseCode} (${watch.sectionLabel})` : watch.courseCode
-      // seats comes from the payload: watch.lastSeats is overwritten by every
-      // poll and can read 0 by the time this job runs.
-      const isFinal = alertNumber >= MAX_ALERTS_PER_WATCH
-      const tail = isFinal
-        ? ` (that's ${alertNumber} of ${MAX_ALERTS_PER_WATCH}, so this watch is done. text "watch ${watch.courseCode} ${watch.crn}" to turn it back on.)`
-        : ''
-      const registerSite = getSchool(watch.school)?.banner?.registerSite
-      const registerHint = registerSite ? `Register at ${registerSite} before it fills up.` : 'Register before it fills up.'
-      const msg = `🚨 Seat opened in ${courseLabel}, ${seats} seat${seats === 1 ? '' : 's'} available! ${registerHint}${tail}`
-
-      // alertCount/lastAlertAt were already written by claimAlertSlot.
-      await sendMessage(watch.user.phone, msg)
-      await prisma.message.create({ data: { userId: watch.userId, direction: 'out', body: msg } })
-      await logMetric('alert_sent', watch.userId, { watchId, seatEventId, alertNumber })
-      console.log(`[worker] Seat alert sent for watch ${watchId} (${watch.courseCode})`)
+      await processSeatAlertJob(job.data as SeatAlertJobData, sendMessage)
       return
     }
 
