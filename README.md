@@ -1,20 +1,20 @@
 <p align="center">
-  <img src="banner.png" width="120" alt="Nudge" />
+  <img src="banner.png" width="120" alt="nudge" />
 </p>
 
 # nudge
 
-**The reminder you can't ignore.** · [nudgebuddy.net](https://nudgebuddy.net) · 35 users
+[nudgebuddy.net](https://nudgebuddy.net) · live · 35 users
 
-Nudge is an AI assistant that texts you on iMessage. Tell it what's due and it'll hound you until you do it. Built for people with real ADHD, and for GSU students trying to snipe open course seats.
+an ai assistant that lives in imessage. text it an assignment, it schedules the reminder and follows up until you've done it. i built it for people with adhd, and then for gsu students trying to get into full classes.
 
 https://github.com/user-attachments/assets/a9fcf4bc-75de-4606-bc01-d9980494b115
 
-> **About the source.** The code behind nudge is in a private repo. It's a live product with real users, so I don't publish it, but I'm happy to add you to the repo if you're reviewing my work. Email zacharyinyan [at] gmail [dot] com, or read how the hard parts were built on [zachinyang.com/work](https://zachinyang.com/work).
+> the code is in a private repo. nudge is a live product with real users, so i don't publish the source, but if you're looking at my work i'll add you to the repo the same day. zacharyinyan [at] gmail [dot] com. the hard parts are written up on [zachinyang.com/work](https://zachinyang.com/work).
 
-## What it does
+## what it does
 
-You text it like a friend. It handles the rest.
+you text it the way you'd text a friend.
 
 ```
 You:   i have a bio exam friday at 8am
@@ -23,24 +23,13 @@ You:   yes lol
 Nudge: locked in. blowing your phone up thursday. you asked for this
 ```
 
-When reminder time hits, Nudge texts you. If you don't reply, it escalates. 5 texts, progressively more unhinged. It stops the moment you respond.
+when the time comes it texts you. if you don't answer it sends up to 5 more, 30 seconds apart, each one less polite than the last, and stops the moment you reply.
 
-## Features
+it also does the smaller things. "remind me to take my meds in 20 minutes" works. text it a photo of your syllabus and it pulls out every due date. "nag me when i get home to take out the trash" works through an ios shortcut and a geofence. there's a web dashboard where you can see your assignments, mark things done and pick a persona (coach, snarky or anxious). you sign in with a code nudge texts you, so there are no passwords.
 
-- **iMessage native.** Shows up where your friends do. Blue bubbles, typing indicators, the whole thing.
-- **Persistent nag mode.** Escalating texts, 30 seconds apart. Stops when you reply.
-- **Natural language.** "remind me to submit my essay tomorrow at noon" just works.
-- **One-off reminders.** "remind me to take my meds in 20 minutes" works too.
-- **Multiple personas.** Coach, Snarky, or Anxious. Pick your vibe.
-- **Syllabus photos.** Text a screenshot of your syllabus and it pulls out every due date.
-- **Web dashboard.** See your assignments, pick your persona, mark things done.
-- **OTP login.** Sign in via a code Nudge texts you. No passwords.
-- **Location reminders.** "nag me when I get home to take out the trash." Uses iOS Shortcuts and geofencing.
-- **SeatSnipe.** Monitors GSU Banner for open course seats and texts you the instant one opens. 152 students used it during fall 2026 add/drop, 100 of them in the first 24 hours.
+## seatsnipe
 
-## SeatSnipe
-
-Built for GSU students during add/drop. Text a course name or CRN, and Nudge watches Banner around the clock until a seat opens.
+during add/drop at gsu, classes fill up and seats open for minutes at a time. seatsnipe watches a section for you and texts you the second a seat opens. 152 students used it in fall 2026, 100 of them in the first 24 hours.
 
 ```
 You:   watch CSC 1301
@@ -55,55 +44,34 @@ Nudge: Watching CSC 1301 Sec 008 (CRN 12345). I'll text you the second a seat op
 Nudge: 🚨 A seat just opened in CSC 1301 Sec 008 — go register NOW before it's gone
 ```
 
-- Polls Banner every 60 to 90 s in surge mode, 5 min normal, 15 min overnight
-- Alerts fire only when a section goes from 0 seats to some, not on flapping
-- 10 minute cooldown between alerts and 3 alerts per watch, then the watch retires and tells you how to re-arm it
-- Up to 5 active watches per user
-- Watches expire on their own once add/drop closes
+it polls banner every 60 to 90 seconds when registration is busy, every 5 minutes normally and every 15 overnight. an alert only fires when a section goes from zero seats to some, so a seat flapping open and closed doesn't text you five times. each watch gets 3 alerts, then retires and tells you how to re-arm it. you can hold 5 watches at once, and they all expire on their own when add/drop closes.
 
-GSU's Banner API has no public docs and answers 200 with empty results if you call it out of order. The client rebuilds the 3-step session-cookie handshake captured from the browser, with a mutex and a rate limiter so concurrent polls don't thrash the session, and a circuit breaker that pauses for 10 minutes after 5 errors. The full story is in [the seatsnipe write-up](https://zachinyang.com/work/seatsnipe-add-drop).
+the hard part was banner itself. gsu's registration api has no public docs and answers 200 with empty results if you call it out of order. i captured the real request chain from browser dev tools and rebuilt the 3-step session-cookie handshake in code, with a mutex and a 500ms rate limiter so concurrent polls don't thrash the session, and a circuit breaker that pauses for 10 minutes after 5 errors. the whole story is in [the seatsnipe write-up](https://zachinyang.com/work/seatsnipe-add-drop).
 
-## How it's built
-
-| Layer | Tech |
-|---|---|
-| Frontend / API | Next.js 15 (App Router), Vercel |
-| Database | Neon (serverless Postgres) + Prisma |
-| Job queue | BullMQ + Upstash Redis |
-| iMessage bridge | BlueBubbles |
-| AI | Anthropic API, a Claude agent with a tool-use loop across 14 tools |
-| Auth | JWT via jose |
-| Worker | Node.js + PM2 (persistent process) |
-| Banner API | Custom TypeScript client with session cookie management |
+## how it's built
 
 ```
-iMessage → BlueBubbles → Webhook → Next.js API (Vercel)
+iMessage → BlueBubbles → webhook → next.js api (vercel)
                                          ↓
-                                    AI Agent Loop
+                                   claude agent loop
                                          ↓
-                               BullMQ (Upstash Redis)
+                              bullmq (upstash redis)
                                          ↓
-                              Worker (PM2, persistent)
+                              worker (pm2, always on)
                              /                       \
-                    Reminder jobs              SeatSnipe watcher loop
+                    reminder jobs              seatsnipe watcher loop
                                                       ↓
-                                             Banner API polling
+                                             banner api polling
                                                       ↓
-                                              Alert → iMessage
+                                              alert → iMessage
 ```
 
-Serverless functions die after each request, so a delayed reminder can't just sleep. The Next.js route handles the webhook and a separate always-on worker consumes the queue and fires reminders on time, with recovery on boot so nothing is lost if the worker restarts. Duplicate texts are blocked from three independent sources (serverless retries, BullMQ retries, concurrent watcher ticks) with an atomic database claim that rolls back if the send fails, Redis `SET NX` dedup keyed on the message GUID, and deterministic BullMQ job ids.
+typescript, next.js 15, postgres on neon with prisma, bullmq on upstash redis, bluebubbles for imessage, the anthropic api, docker.
 
-## Personas
+serverless functions die after each request, so a delayed reminder can't just sleep. a next.js route handles the webhook and a separate always-on worker consumes the queue and fires reminders on time, with recovery on boot so nothing is lost if the worker restarts.
 
-| Persona | Vibe |
-|---|---|
-| **Coach** | Warm, supportive, gets things done |
-| **Snarky** | Dry humor, calls you out, still shows up |
-| **Anxious** | Stressed on your behalf, endearingly flustered |
-
-Change yours anytime in the dashboard or just tell Nudge.
+a text going out twice is the bug i spent the most time on. duplicates can come from three places at once (serverless retries, bullmq retries, two watcher ticks overlapping), so each send has to win an atomic database claim that rolls back if the send fails, pass a redis set nx check keyed on the message guid, and carry a deterministic bullmq job id. the claude agent runs a tool-use loop across 14 tools, keeps a 20-message rolling history, and pushes any reminder that would land overnight to 9am in your own timezone.
 
 ---
 
-Copyright © 2026 Zach Inyang. All rights reserved.
+copyright © 2026 zach inyang. all rights reserved.
