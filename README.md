@@ -8,7 +8,7 @@
 
 an ai assistant that lives in imessage. text it an assignment, it schedules the reminder and follows up until you've done it. i built it for people with adhd, and then for gsu students trying to get into full classes.
 
-https://github.com/user-attachments/assets/a9fcf4bc-75de-4606-bc01-d9980494b115
+<p align="center"><img src="demo.gif" width="640" alt="a text conversation with nudge: you tell it what is due, it schedules the reminder and follows up"></p>
 
 > the code is in a private repo. nudge is a live product with real users, so i don't publish the source, but if you're looking at my work i'll add you to the repo the same day. zacharyinyan [at] gmail [dot] com. the hard parts are written up on [zachinyang.com/work](https://zachinyang.com/work).
 
